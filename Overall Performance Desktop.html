@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overall Performance</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="assets/dash.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="data/dashboard-data.js"></script>
+<script src="assets/dash-engine.js"></script>
+<script src="assets/dash-overall.js"></script>
+<style>
+.wrap { max-width: 1320px; margin: 0 auto; padding: 16px 16px 40px; }
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 8px; }
+header.top h1 { font-size: 20px; margin: 0; flex: 1 1 220px; }
+header.top h1 small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+.asof { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; }
+.asof b { display: block; font-size: 11px; color: var(--muted); font-weight: 600; }
+.asof span { font-size: 18px; font-weight: 600; }
+.slicers { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 16px; position: sticky; top: 0; z-index: 1000; background: var(--page); padding: 8px 0; }
+.grid { display: grid; gap: 16px; }
+.g-kpi { grid-template-columns: 2fr 1fr 2fr; }
+.g-kpi2 { grid-template-columns: 1fr 1fr; }
+.g-2 { grid-template-columns: 1fr 1fr; }
+.g-3 { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 960px) { .g-kpi, .g-kpi2, .g-2, .g-3 { grid-template-columns: 1fr; } }
+section { margin-top: 16px; }
+thead tr:nth-child(2) th { top: 25px; }
+th.wk { text-align: center; border-left: 1px solid var(--grid); }
+td.wk-start { border-left: 1px solid var(--grid); }
+.chan-pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); margin-left: 6px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+<header class="top">
+  <nav class="pg-nav"><a class="home-link" href="index.html">⌂ Home</a><a class="home-link" href="Overall%20Performance%20Mobile.html">Mobile view</a></nav>
+  <h1>Overall Performance<span class="chan-pill" id="chanPill"></span><small id="genInfo">BMA East</small></h1>
+  <div class="asof"><b>AS of Date</b><span id="asOf">–</span></div>
+</header>
+<div class="slicers" id="slicers"></div>
+
+<div class="grid g-kpi" id="kpis"></div>
+<section class="grid g-kpi2" id="kpis2"></section>
+
+<section class="grid g-2">
+  <div class="card"><h2>Weekly GA by Group Sim <span class="sub">· current month · %WoW</span></h2><div class="tbl-wrap" id="tblWeekSim"></div></div>
+  <div class="card"><h2>Weekly GA by Doc Type <span class="sub">· current month · %WoW</span></h2><div class="tbl-wrap" id="tblWeekDoc"></div></div>
+</section>
+
+<section class="grid g-2">
+  <div class="card"><h2>Shops by %MoM GA <span class="sub">· bubble size = GA RR</span></h2>
+    <div class="legend"><span><i style="background:var(--good)"></i>Growth</span><span><i style="background:var(--bad)"></i>Decline</span><span><i style="background:var(--other)"></i>No change / no prev</span></div>
+    <div class="map" id="mapMom"></div></div>
+  <div class="card"><h2>Shops by Segment <span class="sub">· customer segment · bubble size = GA RR · click a segment to filter</span></h2>
+    <div class="legend" id="lgSeg"></div>
+    <div class="map" id="mapSeg"></div></div>
+</section>
+
+<section class="grid g-2">
+  <div class="card"><h2>GA by Sub-district &amp; Shop <span class="sub">· sorted by Diff GA</span></h2><div class="tbl-wrap" id="tblStore"></div></div>
+  <div class="card"><h2>GA by Sim Type</h2><div class="tbl-wrap" id="tblSim"></div></div>
+</section>
+
+<section class="grid g-2">
+  <div class="card"><h2>AP1D by Price Band</h2><div class="tbl-wrap" id="tblBand"></div></div>
+  <div class="card"><h2>GA vs ARPU per Tumbon <span class="sub">· x = ARPU, y = Previous GA, bubble = GA RR · lines = averages</span></h2><div class="chart-box" style="height:320px"><canvas id="cScatter"></canvas></div></div>
+</section>
+
+<section class="grid g-2">
+  <div class="card"><h2>GA by Month &amp; Doc Type</h2><div class="legend" id="lgDoc"></div><div class="chart-box"><canvas id="cMonthDoc"></canvas></div></div>
+  <div class="card"><h2>GA by Month &amp; Sim Type Group</h2><div class="legend" id="lgSim"></div><div class="chart-box"><canvas id="cMonthSim"></canvas></div></div>
+</section>
+
+<section class="grid g-3">
+  <div class="card"><h2 id="tGA">Daily GA</h2><div class="legend"><span><i style="background:var(--s1)"></i>Current GA</span><span><i class="dash"></i>Previous GA</span></div><div class="chart-box"><canvas id="cDailyGA"></canvas></div></div>
+  <div class="card"><h2 id="tM1">Daily M1</h2><div class="legend"><span><i style="background:var(--s1)"></i>Current M1</span><span><i class="dash"></i>Previous M1</span></div><div class="chart-box"><canvas id="cDailyM1"></canvas></div></div>
+  <div class="card"><h2>GA by Day of Week <span class="sub">· previous + current month</span></h2><div class="chart-box"><canvas id="cDow"></canvas></div></div>
+</section>
+
+<p class="note" id="note"></p>
+</div>
+
+<script>
+"use strict";
+if (!E.ok) { document.getElementById("app").innerHTML = E.noDataHtml; throw new Error("no data"); }
+const { $, fmt, esc, col: C } = E;
+
+/* ---------------- filters ---------------- */
+const FL = new E.Filters(OV.dims(), update);
+const slicers = E.buildSlicers($("slicers"), FL);
+
+const compute = () => OV.compute(FL);
+
+/* ---------------- KPIs ---------------- */
+function renderKpis(R) {
+  const T = E.measures(R.total), tg = R.target;
+  const ach = (v, t) => t ? E.pctTxt(v / t) : "–";
+  $("kpis").innerHTML = `
+  <div class="card"><div class="kpi-top">
+      <div><div class="kpi-label">GA RR (CUR)</div><div class="kpi-val">${fmt(T.rr)} <small>(${fmt(T.cur)})</small></div></div>
+      <div><div class="kpi-label">% Achieve</div><div class="kpi-val">${ach(T.rr, tg.ga)}</div></div></div>
+    <div class="kpi-deltas">${E.deltaHtml(T.rr - T.pre, T.pre, "Last Month")}${E.deltaHtml(T.rr - tg.ga, tg.ga, "Target")}</div></div>
+  <div class="card"><div class="kpi-label">Current Week GA <span style="color:var(--muted)">(Week ${E.CUR_WEEK}, 7-day run rate)</span></div>
+    <div class="kpi-val">${fmt(T.curWeek)}</div>
+    <div class="kpi-deltas">${E.deltaHtml(T.curWeek - T.prevWeek, T.prevWeek, "Last Week")}</div></div>
+  <div class="card"><div class="kpi-top">
+      <div><div class="kpi-label">M1 RR (CUR)</div><div class="kpi-val">${fmt(T.m1rr)} <small>(${fmt(T.m1c)})</small></div></div>
+      <div><div class="kpi-label">% Achieve</div><div class="kpi-val">${ach(T.m1rr, tg.m1)}</div></div></div>
+    <div class="kpi-deltas">${E.deltaHtml(T.m1rr - T.m1p, T.m1p, "Last Month")}${E.deltaHtml(T.m1rr - tg.m1, tg.m1, "Target")}</div></div>`;
+  const mk = R.market, apUp = T.pctAp1dCur - T.pctAp1dPrev;
+  const shareTxt = mk.rtrAvg != null ? E.pctTxt(mk.rtrAvg) : (mk.n711 ? "100%" : "–");
+  $("kpis2").innerHTML = `
+  <div class="card"><div class="kpi-top">
+      <div><div class="kpi-label">AP1D RR (CUR)</div><div class="kpi-val">${fmt(T.ap1dRR)} <small>(${fmt(T.ap1dCur)})</small></div></div>
+      <div><div class="kpi-label">%AP1D</div><div class="kpi-val">${E.pctTxt(T.pctAp1dCur)}</div></div></div>
+    <div class="kpi-deltas"><div class="delta"><span class="d ${apUp > 0.0005 ? "up" : apUp < -0.0005 ? "down" : "flat"}">${apUp >= 0 ? "▲" : "▼"} ${apUp >= 0 ? "+" : ""}${(apUp * 100).toFixed(0)} pts (${T.ap1dRR - T.ap1dPrev > 0 ? "+" : ""}${fmt(T.ap1dRR - T.ap1dPrev)})</span><br>
+      <span class="vs">vs ${E.pctTxt(T.pctAp1dPrev)} (${fmt(T.ap1dPrev)}) Last Month</span></div></div></div>
+  <div class="card"><div class="kpi-top">
+      <div><div class="kpi-label">Market Share (True) · RTR avg</div><div class="kpi-val">${shareTxt}</div></div>
+      <div><div class="kpi-label">Market Size (RTR)</div><div class="kpi-val">${mk.size ? fmt(mk.size) : "–"}</div></div></div>
+    <div class="kpi-deltas"><div class="delta"><span class="vs">${mk.rtrOutlets} RTR shop(s) with market data · True GA ${fmt(mk.gaTrue)}${mk.n711 ? ` · ${mk.n711} 7-11 shop(s) counted as 100%` : ""}</span></div></div></div>`;
+}
+
+/* ---------------- tables ---------------- */
+function weekTable(el, map, dict1, dict2, hdr, col1, col2, lab1, lab2) {
+  const pk1 = k => E.pk(el.id, col1, k, `${lab1}: ${E.blank(dict1[k])}`), pk2 = k => E.pk(el.id, col2, k, `${lab2}: ${E.blank(dict2[k])}`);
+  const cells = M => { let h = ""; for (let w = 1; w <= 4; w++) h += `<td class="wk-start">${fmt(M.weekVal(w))}</td>` + E.pctCell(M.wow(w)); return h; };
+  const groups = [...map.entries()].map(([k, g]) => ({ k, name: E.blank(dict1[k]), g, M: E.measures(g.acc) })).filter(x => x.M.cur || x.M.pre).sort((a, b) => b.M.cur - a.M.cur);
+  if (!groups.length) { el.innerHTML = `<div class="empty">No data for this selection</div>`; return; }
+  let h = `<table><thead><tr><th rowspan="2">${hdr}</th>`;
+  for (let w = 1; w <= 4; w++) h += `<th class="wk" colspan="2">Week${w}</th>`;
+  h += `</tr><tr>`; for (let w = 1; w <= 4; w++) h += `<th class="wk">GA</th><th>%WoW</th>`;
+  h += `</tr></thead><tbody>`;
+  const tot = E.newAcc();
+  groups.forEach(x => {
+    const id = el.id + ":" + x.k, open = E.openGroups.has(id);
+    const kids = [...x.g.kids.entries()].map(([k, a]) => ({ k, name: E.blank(dict2[k]), M: E.measures(a) })).filter(c => c.M.cur || c.M.pre).sort((a, b) => b.M.cur - a.M.cur);
+    const p1 = pk1(x.k);
+    h += `<tr class="grp${E.pickCls(p1)}"${E.pickAttr(p1)}><td><button class="tog" data-g="${esc(id)}" aria-expanded="${open}">${open ? "−" : "+"}</button>${esc(x.name)}</td>${cells(x.M)}</tr>`;
+    kids.forEach(c => { const p2 = pk2(c.k); h += `<tr class="child${E.pickCls(p2)}"${E.pickAttr(p2)} data-p="${esc(id)}" ${open ? "" : "hidden"}><td title="${esc(c.name)}">${esc(c.name)}</td>${cells(c.M)}</tr>`; });
+    E.merge(tot, x.g.acc);
+  });
+  el.innerHTML = h + `<tr class="total"><td>Total</td>${cells(E.measures(tot))}</tr></tbody></table>`;
+}
+const gaCols = [
+  { h: "Pre GA", cell: M => `<td>${fmt(M.pre)}</td>` }, { h: "Cur GA", cell: M => `<td>${fmt(M.cur)}</td>` },
+  { h: "GA RR", cell: M => `<td>${fmt(M.rr)}</td>` }, { h: "Diff GA", cell: M => E.diffCell(M.diff) },
+  { h: "%MoM", cell: M => E.pctCell(M.mom) }, { h: "%WoW", cell: M => E.pctCell(M.curWow) }];
+
+/* ---------------- maps ---------------- */
+const maps = {};
+function renderMaps(V) {
+  if (!maps.mom) { maps.mom = E.makeMap("mapMom"); maps.seg = E.makeMap("mapSeg"); }
+  E.drawMap(maps.mom, V("mapMom").store);
+  // shops by customer segment (Store Profile 'Segment'); colours fixed per segment so they do not jump when filtering
+  $("lgSeg").innerHTML = E.segLegend("lgSeg", V("lgSeg").store);
+  E.drawMap(maps.seg, V("mapSeg").store, p => E.segColour(p.s[3] || ""));
+}
+
+/* ---------------- charts ---------------- */
+function renderCharts(V) {
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const R = V.R, RD = V("cMonthDoc"), RS = V("cMonthSim");
+  const months = [...new Set([...RD.monthDoc.keys(), ...RS.monthStg.keys()])].sort((a, b) => a - b);
+  const docSer = E.seriesByMonth(RD.monthDoc, E.dict.doc, months), stgSer = E.seriesByMonth(RS.monthStg, E.dict.stg, months);
+  $("lgDoc").innerHTML = E.legendHtml(docSer, T); $("lgSim").innerHTML = E.legendHtml(stgSer, T);
+  E.draw("cMonthDoc", { type: "line", data: { labels: months.map(String), datasets: docSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, "Month", "GA", E.seriesPick("cMonthDoc", docSer, "doc", E.dict.doc)) });
+  E.draw("cMonthSim", { type: "line", data: { labels: months.map(String), datasets: stgSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, "Month", "GA", E.seriesPick("cMonthSim", stgSer, "stg", E.dict.stg)) });
+
+  const lastDay = Math.max(E.AS_OF % 100, E.daysIn(E.PREV_M));
+  const labels = Array.from({ length: lastDay }, (_, i) => String(i + 1).padStart(2, "0"));
+  const cur = a => labels.map((_, i) => i + 1 <= E.AS_OF % 100 ? a[i + 1] : null);
+  const prev = a => labels.map((_, i) => i + 1 <= E.daysIn(E.PREV_M) ? a[i + 1] : null);
+  const tGAd = R.target.ga / 31, tM1d = R.target.m1 / 31;
+  $("tGA").innerHTML = `Daily GA <span class="sub">· Target GA Daily: ${fmt(tGAd)}</span>`;
+  $("tM1").innerHTML = `Daily M1 <span class="sub">· Target M1 Daily: ${fmt(tM1d)}</span>`;
+  E.draw("cDailyGA", { type: "line", data: { labels, datasets: [E.line("Current GA", cur(R.dCurGA), T.S[0]), E.line("Previous GA", prev(R.dPrevGA), T.prev, { borderDash: [5, 4] })] },
+    options: E.lineOpts(T, "Day"), plugins: [E.hLine(tGAd, "Target " + fmt(tGAd), T)] });
+  E.draw("cDailyM1", { type: "line", data: { labels, datasets: [E.line("Current M1", cur(R.dCurM1), T.S[0]), E.line("Previous M1", prev(R.dPrevM1), T.prev, { borderDash: [5, 4] })] },
+    options: E.lineOpts(T, "Day"), plugins: [E.hLine(tM1d, "Target " + fmt(tM1d), T)] });
+
+  const dowNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  E.draw("cDow", { type: "bar", data: { labels: dowNames.map(d => d.slice(0, 3)), datasets: [{ label: "GA", data: [...V("cDow").dow], backgroundColor: dowNames.map((d, i) => !E.pickedIn("cDow") || E.isPicked(E.pkDow("cDow", i, d)) ? T.S[0] : T.S[0] + "55"), borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: "bottom", maxBarThickness: 40 }] },
+    options: { ...E.chartPick("cDow", el => E.pkDow("cDow", el.index, dowNames[el.index])), responsive: true, maintainAspectRatio: false, scales: E.axes(T, null, "GA"), layout: { padding: { top: 16 } },
+      plugins: { tooltip: { callbacks: { title: c => dowNames[c[0].dataIndex], label: c => "GA: " + fmt(c.parsed.y) } } } }, plugins: [E.barLabels(v => fmt(v), T)] });
+
+  const pts = [];
+  V("cScatter").sub.forEach((g, k) => { const M = E.measures(g.acc); if (M.rr > 0 || M.pre > 0) pts.push({ k, n: E.blank(E.dict.sub[k]), x: M.rr ? M.m1rr / M.rr : 0, y: M.pre, rr: M.rr }); });
+  const avgX = pts.length ? pts.reduce((s, p) => s + p.x, 0) / pts.length : 0, avgY = pts.length ? pts.reduce((s, p) => s + p.y, 0) / pts.length : 0;
+  const maxRR = Math.max(1, ...pts.map(p => p.rr)), labelSet = new Set([...pts].sort((a, b) => b.rr - a.rr).slice(0, 12).map(p => p.n));
+  E.draw("cScatter", { type: "bubble",
+    data: { datasets: [{ data: pts.map(p => ({ x: p.x, y: p.y, r: 4 + Math.sqrt(p.rr / maxRR) * 20, n: p.n, rr: p.rr })), backgroundColor: T.S[0] + "a6", borderColor: T.surface, borderWidth: 2 }] },
+    options: { ...E.chartPick("cScatter", el => { const p = pts[el.index]; return p && E.pk("cScatter", "sub", p.k, "Sub-district: " + p.n); }), responsive: true, maintainAspectRatio: false,
+      scales: { x: { grid: { color: T.grid }, title: { display: true, text: "ARPU" } }, y: { grid: { color: T.grid }, beginAtZero: true, title: { display: true, text: "Previous GA" }, ticks: { callback: E.kfmt } } },
+      plugins: { tooltip: { callbacks: { label: c => `${c.raw.n}: Prev GA ${fmt(c.raw.y)}, ARPU ${fmt(c.raw.x)}, GA RR ${fmt(c.raw.rr)}` } } } },
+    plugins: [{ id: "quad", beforeDatasetsDraw(c) {
+      if (!pts.length) return; const x = c.ctx, xs = c.scales.x, ys = c.scales.y, a = c.chartArea;
+      x.save(); x.strokeStyle = T.ink2; x.lineWidth = 1; x.setLineDash([4, 4]); x.beginPath();
+      x.moveTo(xs.getPixelForValue(avgX), a.top); x.lineTo(xs.getPixelForValue(avgX), a.bottom);
+      x.moveTo(a.left, ys.getPixelForValue(avgY)); x.lineTo(a.right, ys.getPixelForValue(avgY)); x.stroke(); x.restore();
+    }, afterDatasetsDraw(c) {
+      const x = c.ctx; x.save(); x.fillStyle = T.ink2; x.textAlign = "center"; x.font = "11px system-ui";
+      c.getDatasetMeta(0).data.forEach((p, i) => { const d = c.data.datasets[0].data[i]; if (labelSet.has(d.n)) x.fillText(d.n, p.x, p.y + d.r + 12); }); x.restore();
+    } }] });
+}
+
+/* ---------------- main ---------------- */
+function update() {
+  slicers.refresh();
+  $("chanPill").textContent = E.channelLabel(FL);
+  const V = FL.views(compute), R = V.R;
+  renderKpis(R);
+  weekTable($("tblWeekSim"), V("tblWeekSim").wkGs, E.dict.gs, E.dict.stg, "GROUP_SIM", "gs", "stg", "Group Sim", "Sim Type Group");
+  weekTable($("tblWeekDoc"), V("tblWeekDoc").wkDoc, E.dict.doc, E.dict.dist, "DOC_TYP_GP", "doc", "dist", "Doc Type", "District");
+  E.matrix($("tblStore"), V("tblStore").sub, k => E.blank(E.dict.sub[k]), k => `${E.stores[k][1]}${E.stores[k][11] !== "7-11" ? " · " + E.stores[k][11] : ""}`, "SUB_DISTRICT", gaCols,
+    { pick1: k => E.pk("tblStore", "sub", k, "Sub-district: " + E.blank(E.dict.sub[k])), pick2: k => E.pkStore("tblStore", k) });
+  E.matrix($("tblSim"), V("tblSim").sim, k => E.blank(E.dict.stg[k]), k => E.blank(E.dict.st[k]), "Sim Type", gaCols,
+    { pick1: k => E.pk("tblSim", "stg", k, "Sim Type Group: " + E.blank(E.dict.stg[k])), pick2: k => E.pk("tblSim", "st", k, "Sim Type: " + E.blank(E.dict.st[k])) });
+  $("tblBand").innerHTML = E.bandHtml(R.bands);
+  renderMaps(V);
+  renderCharts(V);
+}
+$("asOf").textContent = E.fmtDate(E.AS_OF);
+$("genInfo").textContent = `BMA East · data exported ${E.data.generated}`;
+$("note").textContent = `Current month = ${E.CUR_M}, previous = ${E.PREV_M}; run rates = value × 31 ÷ ${E.DAY_NO} (AS of day − 1). ` +
+  `Target = Target By AE Name (7-11) / RTR Target By AE Name (RTR) for the selected channel(s). Market share: RTR average %True from Battle field; 7-11 = 100%. ` +
+  `"Other" channel = codes in the area that are in neither profile. Click a row, bubble, bar or chart line to filter the page; Ctrl+click to select several (click again or ✕ to clear). Update data: python etl\\export_html.py`;
+update();
+</script>
+</body>
+</html>

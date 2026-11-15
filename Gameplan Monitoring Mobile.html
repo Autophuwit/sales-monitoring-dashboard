@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gameplan Monitoring · Mobile</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="assets/dash.css">
+<link rel="stylesheet" href="assets/dash-mobile.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="data/dashboard-data.js"></script>
+<script src="assets/dash-engine.js"></script>
+<script src="assets/dash-gameplan.js"></script>
+<script src="assets/dash-mobile.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="tb-row"><a class="home-link" href="index.html" aria-label="Home">⌂</a><h1>Gameplan Monitoring</h1><div class="asof">As of <b id="asOf">–</b></div></div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<main id="app">
+  <div class="m-slicers" id="slicers"></div>
+  <section class="view" id="v-plans">
+    <div class="sec-title">Overall Game Plan Performance</div>
+    <div id="planCards"></div>
+    <div class="card"><h2>Weekly Performance <span class="sub">GA run rate</span></h2><div class="chart-box" style="height:200px"><canvas id="cWeek"></canvas></div></div>
+  </section>
+
+  <section class="view" id="v-areas" hidden>
+    <div class="toolbar" style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--ink-2);margin-bottom:8px">
+      <span>GA RR · Commit from Close Gap Store</span>
+      <select id="sort" aria-label="Sort" style="font:inherit;font-size:13px;color:var(--ink);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:5px 8px">
+        <option value="mom">%MoM low → high</option><option value="com">%Commit low → high</option>
+        <option value="rr">GA RR high → low</option><option value="name">Name A → Z</option>
+      </select>
+    </div>
+    <div class="list" id="subList"></div>
+    <div class="card"><h2>Stores by %MoM GA <span class="sub">green up · red down</span></h2><div class="map" id="map"></div></div>
+  </section>
+
+  <section class="view" id="v-trends" hidden>
+    <div class="card"><h2 id="tDaily">Commit GA Daily</h2>
+      <div class="legend"><span><i class="dot"></i>Commit daily</span><span><i style="background:var(--s1)"></i>Cur GA</span><span><i class="dash"></i>Pre GA</span></div>
+      <div class="chart-box"><canvas id="cDaily"></canvas></div></div>
+    <div class="sec-title">GA by Sim Type</div>
+    <div class="list" id="simList"></div>
+    <div class="card"><h2>GA by Month <span class="sub">DOC_TYP_GP</span></h2><div class="legend" id="lgDoc"></div><div class="chart-box"><canvas id="cMonthDoc"></canvas></div></div>
+    <div class="card"><h2>GA by Month <span class="sub">SIM_TYPE_GROUP</span></h2><div class="legend" id="lgSim"></div><div class="chart-box"><canvas id="cMonthSim"></canvas></div></div>
+    <p class="note" id="note"></p>
+  </section>
+</main>
+
+<script>
+"use strict";
+if (!E.ok) { document.getElementById("app").innerHTML = E.noDataHtml; throw new Error("no data"); }
+const { $, fmt, esc } = E;
+EM.nav([["plans", "Game Plan", "target"], ["areas", "Areas", "stores"], ["trends", "Trends", "trends"]]);
+
+const FL = new E.Filters(GP.dims(), update);
+const sheet = EM.inlineFilters(FL, $("slicers"), $("chips"));
+let R = null, V = null, mapObj = null, tab = null;
+
+function renderPlans() {
+  const RP = V("planCards");
+  const card = p => {
+    const M = E.measures(RP.plans.get(p)), c = RP.planCommit.get(p), diff = M.rr - c, pc = c ? diff / c : null;
+    const cls = Math.round(diff) > 0 ? "up" : Math.round(diff) < 0 ? "down" : "flat";
+    const [sd, ed] = E.planDates(p), id = E.pkPlan("planCards", p);
+    return `<div class="plan${E.pickCls(id)}"${E.pickAttr(id)}><div class="p-name">${esc(p)}${sd ? ` <span style="font-weight:400;color:var(--muted);font-size:11px">· ${sd} → ${ed}</span>` : ""}</div>
+      <div class="p-row"><span class="p-commit">${fmt(c)}<small>Commit GA</small></span>
+        <span class="p-delta ${cls}">${diff >= 0 ? "▲" : "▼"} ${E.pctTxt(pc)} (${diff > 0 ? "+" : ""}${fmt(diff)})</span></div>
+      <div class="p-row"><span class="p-vs">vs ${fmt(M.rr)} GA run rate · Pre ${fmt(M.pre)} · Cur ${fmt(M.cur)}</span>
+        <span>${EM.pill(M.mom, "MoM")} ${EM.pill(M.curWow, "WoW")}</span></div>
+      <div class="prog-track"><div class="prog-fill" style="width:${c ? Math.min(M.rr / c, 1) * 100 : 0}%"></div></div></div>`;
+  };
+  // grouped by channel, so "1. ..." of 7-11 and "1. ..." of RTR are not mixed up
+  const chans = [...new Set(RP.planList.map(p => E.planChannel(p)))].sort((a, b) => E.channels.indexOf(a) - E.channels.indexOf(b));
+  $("planCards").innerHTML = chans.map(ch => {
+    const ps = RP.planList.filter(p => E.planChannel(p) === ch).sort((a, b) => (E.measures(RP.plans.get(b)).mom ?? -9) - (E.measures(RP.plans.get(a)).mom ?? -9));
+    const id = E.pkChannel("planCards", ch);
+    return `<div class="sec-title${E.pickCls(id)}"${E.pickAttr(id)}>${esc(ch)} <span style="font-weight:400;color:var(--muted)">· ${ps.length} plan${ps.length > 1 ? "s" : ""}</span></div>` + ps.map(card).join("");
+  }).join("") || `<div class="empty">No game plans in the data</div>`;
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const TM = E.measures(R.total);
+  E.draw("cWeek", { type: "bar", data: { labels: ["W1", "W2", "W3", "W4"], datasets: [{ data: [1, 2, 3, 4].map(w => TM.weekVal(w)), backgroundColor: T.S[0], borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: "bottom", maxBarThickness: 48 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: E.axes(T), layout: { padding: { top: 16 } }, plugins: { tooltip: { callbacks: { label: c => "GA Runrate: " + fmt(c.parsed.y) } } } },
+    plugins: [E.barLabels(v => fmt(v), T)] });
+}
+const sorters = {
+  mom: (a, b) => (a.M.mom ?? 9) - (b.M.mom ?? 9),
+  rr: (a, b) => b.M.rr - a.M.rr,
+  name: (a, b) => String(a.name).localeCompare(String(b.name), "th"),
+  com: null
+};
+function renderAreas() {
+  const comPct = (M, k, l) => { const c = V("subList").commitOf(k, l); return c ? (M.rr - c) / c : null; };
+  const lvl = x => x.g ? 1 : 2;   // group rows carry .g, store rows do not
+  const sortKey = $("sort").value;
+  const sort = sortKey === "com" ? (a, b) => (comPct(a.M, a.k, lvl(a)) ?? 9) - (comPct(b.M, b.k, lvl(b)) ?? 9) : sorters[sortKey];
+  const RA = V("subList");
+  EM.list($("subList"), RA.sub, k => E.blank(E.dict.sub[k]), k => E.stores[k][1], {
+    sort, pick2: k => E.pkStore("subList", k),
+    big: M => fmt(M.rr),
+    meta: (M, k, l) => { const c = RA.commitOf(k, l); return `Pre ${fmt(M.pre)} · Cur ${fmt(M.cur)}` + (c ? ` · Commit ${fmt(c)}` : ""); },
+    pills: (M, k, l) => EM.pill(M.mom, "MoM") + EM.pill(comPct(M, k, l), "Com")
+  });
+  if (!mapObj && tab === "areas") mapObj = E.makeMap("map");
+  if (mapObj) { mapObj.map.invalidateSize(); E.drawMomMap(mapObj, V("map").store); }
+}
+function renderTrends() {
+  EM.list($("simList"), V("simList").sim, k => E.blank(E.dict.stg[k]), k => E.blank(E.dict.st[k]), {
+    pick1: k => E.pk("simList", "stg", k, "Sim Type Group: " + E.blank(E.dict.stg[k])), pick2: k => E.pk("simList", "st", k, "Sim Type: " + E.blank(E.dict.st[k])),
+    big: M => fmt(M.rr), meta: M => `Pre ${fmt(M.pre)} · Cur ${fmt(M.cur)} · <span class="${M.diff < 0 ? "down" : "up"}">${M.diff > 0 ? "+" : ""}${fmt(M.diff)}</span>`,
+    pills: M => EM.pill(M.mom, "MoM") + EM.pill(M.curWow, "WoW") });
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const lastDay = Math.max(E.AS_OF % 100, E.daysIn(E.PREV_M));
+  const labels = Array.from({ length: lastDay }, (_, i) => String(i + 1).padStart(2, "0"));
+  $("tDaily").innerHTML = `Commit GA Daily: ${fmt(R.commitDaily)}`;
+  E.draw("cDaily", { type: "line", data: { labels, datasets: [
+      E.line("Commit GA Daily", labels.map(() => R.commitDaily || null), T.ink2, { borderDash: [2, 3], borderWidth: 1.5, tension: 0 }),
+      E.line("Cur GA", labels.map((_, i) => i + 1 <= E.AS_OF % 100 ? R.dCur[i + 1] : null), T.S[0]),
+      E.line("Pre GA", labels.map((_, i) => i + 1 <= E.daysIn(E.PREV_M) ? R.dPrev[i + 1] : null), T.prev, { borderDash: [5, 4] })] },
+    options: E.lineOpts(T) });
+  const RD = V("cMonthDoc"), RG = V("cMonthSim");
+  const months = [...new Set([...RD.monthDoc.keys(), ...RG.monthStg.keys()])].sort((a, b) => a - b);
+  const short = months.map(m => ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m % 100 - 1]);
+  const docSer = E.seriesByMonth(RD.monthDoc, E.dict.doc, months), stgSer = E.seriesByMonth(RG.monthStg, E.dict.stg, months);
+  $("lgDoc").innerHTML = E.legendHtml(docSer, T); $("lgSim").innerHTML = E.legendHtml(stgSer, T);
+  E.draw("cMonthDoc", { type: "line", data: { labels: short, datasets: docSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, null, null, E.seriesPick("cMonthDoc", docSer, "doc", E.dict.doc)) });
+  E.draw("cMonthSim", { type: "line", data: { labels: short, datasets: stgSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, null, null, E.seriesPick("cMonthSim", stgSer, "stg", E.dict.stg)) });
+}
+function renderTab() { if (!R) return; if (tab === "plans") renderPlans(); else if (tab === "areas") renderAreas(); else if (tab === "trends") renderTrends(); }
+function update() { sheet.refresh(); V = FL.views(() => GP.compute(FL)); R = V.R; renderTab(); }
+
+$("sort").addEventListener("change", renderAreas);
+$("asOf").textContent = E.fmtDate(E.AS_OF);
+$("note").textContent = `Data exported ${window.DASH_DATA.generated}. Current month ${E.CUR_M}, previous ${E.PREV_M}; run rate = GA × 31 ÷ ${E.DAY_NO}. Tap a plan, shop, sim type or chart line to filter; long-press to add more (tap again or ✕ to clear).`;
+sheet.refresh(); V = FL.views(() => GP.compute(FL)); R = V.R;
+EM.tabs(["plans", "areas", "trends"], t => { tab = t; renderTab(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Data By Store · Mobile</title>
+<link rel="stylesheet" href="assets/dash.css">
+<link rel="stylesheet" href="assets/dash-mobile.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="data/dashboard-data.js"></script>
+<script src="assets/dash-engine.js"></script>
+<script src="assets/dash-mobile.js"></script>
+<style>.band-card .tbl-wrap { max-height: none; } .band-card table { font-size: 12px; }</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="tb-row"><a class="home-link" href="index.html" aria-label="Home">⌂</a><h1>Data By Store</h1><div class="asof">As of <b id="asOf">–</b></div></div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<main id="app">
+  <div class="m-slicers" id="slicers"></div>
+  <section class="view" id="v-store">
+    <div class="tiles" id="tiles"></div>
+    <div id="kpis"></div>
+    <div class="sec-title">Gameplan</div>
+    <div id="planCards"></div>
+  </section>
+
+  <section class="view" id="v-daily" hidden>
+    <div class="card"><h2 id="tGA">Daily GA</h2>
+      <div class="legend"><span><i class="dash"></i>Previous GA</span><span><i style="background:var(--s1)"></i>Current GA</span><span><i class="dot"></i>Target daily</span></div>
+      <div class="chart-box"><canvas id="cDailyGA"></canvas></div></div>
+    <div class="card"><h2 id="tM1">Daily M1</h2>
+      <div class="legend"><span><i class="dash"></i>Previous M1</span><span><i style="background:var(--s1)"></i>Current M1</span><span><i class="dot"></i>Target daily</span></div>
+      <div class="chart-box"><canvas id="cDailyM1"></canvas></div></div>
+    <div class="card"><h2>Weekly Performance <span class="sub">GA run rate</span></h2><div class="chart-box" style="height:200px"><canvas id="cWeek"></canvas></div></div>
+  </section>
+
+  <section class="view" id="v-sim" hidden>
+    <div class="card"><h2>Group Sim Type <span class="sub">GA run rate</span></h2>
+      <div class="legend"><span><i style="background:var(--prev)"></i>Previous GA</span><span><i style="background:var(--s1)"></i>Current GA RR</span></div>
+      <div class="chart-box" id="gsBox"><canvas id="cGroupSim"></canvas></div></div>
+    <div class="sec-title">Sim Group</div>
+    <div class="list" id="simList"></div>
+    <div class="card band-card"><h2>AP1D by Price Band</h2><div class="tbl-wrap" id="bandTbl"></div></div>
+    <p class="note" id="note"></p>
+  </section>
+</main>
+
+<script>
+"use strict";
+if (!E.ok) { document.getElementById("app").innerHTML = E.noDataHtml; throw new Error("no data"); }
+const { $, fmt, esc, col: C } = E;
+EM.nav([["store", "Store", "overview"], ["daily", "Daily", "daily"], ["sim", "Sim", "sim"]]);
+
+const FL = new E.Filters([E.DIM.channel(), E.DIM.owner("AE NAME"), E.DIM.gs(), E.DIM.dist(), E.DIM.sub("SUB_DISTRICT"),
+                          E.DIM.comp(), E.DIM.code(), E.DIM.pname()], update);
+// slicers shown on the page, not in a pop-up sheet
+const slicers = EM.inlineFilters(FL, $("slicers"), $("chips"));
+
+function compute() {
+  const ok = FL.ok();
+  const R = { total: E.newAcc(), sim: E.group2(), gs: new Map(), stores: new Set(),
+              dCurGA: new Float64Array(32), dPrevGA: new Float64Array(32), dCurM1: new Float64Array(32), dPrevM1: new Float64Array(32),
+              plans: new Map(E.planNames.map(p => [p, E.newAcc()])) };
+  const planTests = E.planNames.map(p => ({ stores: E.planStores.get(p) || new Set(), sims: E.planSims(p), acc: R.plans.get(p) }));
+  for (let i = 0; i < E.N; i++) {
+    if (!ok(i)) continue;
+    R.stores.add(C.store[i]);
+    E.addRow(R.total, i);
+    E.add2(R.sim, C.stg[i], C.st[i], i);
+    let g = R.gs.get(C.gs[i]); if (!g) { g = E.newAcc(); R.gs.set(C.gs[i], g); } E.addRow(g, i);
+    for (const t of planTests) if (t.stores.has(C.store[i]) && (!t.sims || t.sims.has(C.stg[i]))) E.addRow(t.acc, i);
+    const m = C.mon[i], d = C.dom[i];
+    if (m === E.CUR_M) { R.dCurGA[d] += C.ga[i]; R.dCurM1[d] += C.m1[i]; }
+    else if (m === E.PREV_M) { R.dPrevGA[d] += C.ga[i]; R.dPrevM1[d] += C.m1[i]; }
+  }
+  R.bands = E.bandTable(FL.ok(E.colB));
+  R.channelsPresent = new Set([...R.stores].map(o => E.stores[o][11]));
+  // targets: 7-11 shops -> 'Target All Type' (shop level, daily = ROUNDUP(target/30) per shop);
+  //          RTR has no shop target -> 'RTR Target By AE Name' of the RTR owners in view (daily = target/31)
+  const active = FL.active();
+  const t = { ga: 0, m1: 0, gaD: 0, m1D: 0 };
+  const shops = active ? [...R.stores] : E.stores.map((_, i) => i);
+  shops.forEach(o => { if (E.stores[o][11] !== "7-11") return; const r = E.tat.get(o); if (r) { t.ga += r[1]; t.m1 += r[2]; t.gaD += r[3]; t.m1D += r[4]; } });
+  if (R.channelsPresent.has("RTR")) {
+    const owners = new Set(shops.filter(o => E.stores[o][11] === "RTR").map(o => E.stores[o][2]).filter(Boolean));
+    const ot = E.ownerTarget(owners, null, new Set(["RTR"]));
+    t.ga += ot.ga; t.m1 += ot.m1; t.gaD += ot.ga / 31; t.m1D += ot.m1 / 31;
+  }
+  R.t = t;
+  R.planCommit = new Map(E.planNames.map(p => [p, E.commitRows(new Set([p]), active ? R.stores : null).reduce((s, r) => s + (r[2] || 0), 0)]));
+  R.market = E.marketShare(R.stores);
+  return R;
+}
+
+/* most common value among the filtered shops */
+function mostCommon(R, idx, only) {
+  const cnt = new Map();
+  R.stores.forEach(o => { const s = E.stores[o]; if (only && s[11] !== only) return; const v = s[idx]; if (v) cnt.set(v, (cnt.get(v) || 0) + 1); });
+  const top = [...cnt.entries()].sort((a, b) => b[1] - a[1]);
+  return top.length ? esc(top[0][0]) + (top.length > 1 ? ` <span style="color:var(--muted);font-weight:400">+${top.length - 1}</span>` : "") : "--";
+}
+function alertText(R) {
+  if (R.stores.size !== 1) return null;
+  const a = E.alerts.get([...R.stores][0]);
+  return a ? `🚨 ALERT: %MOM GA = ${E.pctTxt(a.mom)} ต่ำกว่าเกณฑ์ในโซน ${E.pctTxt(a.thr)}` : "--";
+}
+
+let R = null, V = null, tab = null;
+function kpiCard(label, rr, cur, pre, tgt) {
+  return `<div class="card"><div class="kpi-label">${label}</div>
+    <div class="kpi-val">${fmt(rr)} <small>(${fmt(cur)})</small></div>
+    <div class="kpi-deltas">${E.deltaHtml(rr - pre, pre, "Last Month")}${E.deltaHtml(rr - tgt, tgt, "Target")}</div></div>`;
+}
+function renderStore() {
+  const ch = R.channelsPresent, single = R.stores.size === 1;
+  const al = alertText(R), mk = R.market;
+  const share = ch.size === 1 && ch.has("7-11") ? "100%" : mk.rtrAvg != null ? E.pctTxt(mk.rtrAvg) + (ch.has("7-11") ? ' <span style="color:var(--muted);font-weight:400">RTR · 7-11 100%</span>' : "") : "--";
+  $("tiles").innerHTML = `
+    <div class="tile"><div class="t-l">Channel</div><div class="t-v">${esc(E.channelLabel(FL)) === "All channels" ? [...ch].join(" + ") || "--" : esc(E.channelLabel(FL))}</div></div>
+    <div class="tile"><div class="t-l">Market Share (True)</div><div class="t-v">${share}</div></div>
+    <div class="tile"><div class="t-l">Target</div><div class="t-v">${mostCommon(R, 8)}</div></div>
+    <div class="tile"><div class="t-l">Most Segment</div><div class="t-v">${mostCommon(R, 3, "7-11")}</div></div>
+    ${ch.has("7-11") ? `<div class="tile wide"><div class="t-l">Priority</div><div class="t-v">${mostCommon(R, 9, "7-11")}</div></div>` : ""}
+    ${mk.size ? `<div class="tile wide"><div class="t-l">Market Size (RTR)</div><div class="t-v">${fmt(mk.size)} GA · True ${fmt(mk.gaTrue)} · ${mk.rtrOutlets} shop(s)</div></div>` : ""}
+    <div class="tile wide ${al && al !== "--" ? "alert" : ""}"><div class="t-l">Alert Message${single ? "" : " · select one 7-11 store"}</div><div class="t-v">${esc(al || "--")}</div></div>`;
+  const M = E.measures(R.total);
+  $("kpis").innerHTML = kpiCard("GA RR (CUR)", M.rr, M.cur, M.pre, R.t.ga) +
+    `<div class="kpi-pair">
+      <div class="card"><div class="kpi-label">Current Week GA · W${E.CUR_WEEK}</div><div class="kpi-val">${fmt(M.curWeek)}</div>
+        <div class="kpi-deltas">${E.deltaHtml(M.curWeek - M.prevWeek, M.prevWeek, "Last Week")}</div></div>
+      <div class="card"><div class="kpi-label">AP1D RR (CUR)</div><div class="kpi-val">${fmt(M.ap1dRR)} <small>(${fmt(M.ap1dCur)})</small></div>
+        <div class="kpi-deltas"><div class="delta"><span class="d ${M.pctAp1dCur >= M.pctAp1dPrev ? "up" : "down"}">%AP1D ${E.pctTxt(M.pctAp1dCur)}</span><br><span class="vs">vs ${E.pctTxt(M.pctAp1dPrev)} (${fmt(M.ap1dPrev)}) Last Month</span></div></div></div>
+    </div>` +
+    kpiCard("M1 RR (CUR)", M.m1rr, M.m1c, M.m1p, R.t.m1);
+  // plan cards grouped by channel (7-11 and RTR plans can share numbers); tap a card = filter by that plan
+  const RP = V("planCards"), chP = RP.channelsPresent;
+  const card = p => {
+    const PM = E.measures(RP.plans.get(p.name)), c = RP.planCommit.get(p.name), diff = PM.rr - c;
+    if (!c && !PM.rr) return "";
+    const cls = Math.round(diff) > 0 ? "up" : Math.round(diff) < 0 ? "down" : "flat", id = E.pkPlan("planCards", p.name);
+    return `<div class="plan${E.pickCls(id)}"${E.pickAttr(id)}><div class="p-name">${esc(p.name)}</div>
+      <div class="p-row"><span class="p-commit">${fmt(c)}<small>Commit GA</small></span>
+        <span class="p-delta ${cls}">${diff >= 0 ? "▲" : "▼"} ${E.pctTxt(c ? diff / c : null)} (${diff > 0 ? "+" : ""}${fmt(diff)})</span></div>
+      <div class="p-vs">vs ${fmt(PM.rr)} GA run rate</div>
+      <div class="prog-track"><div class="prog-fill" style="width:${c ? Math.min(PM.rr / c, 1) * 100 : 0}%"></div></div></div>`;
+  };
+  $("planCards").innerHTML = E.channels.filter(c => chP.has(c)).map(c => {
+    const cards = E.plans.filter(p => p.channel === c).map(card).join("");
+    return cards ? `<div class="sec-title">${esc(c)}</div>` + cards : "";
+  }).join("") || `<div class="empty">No game plan for this selection</div>`;
+}
+function renderDaily() {
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const lastDay = Math.max(E.AS_OF % 100, E.daysIn(E.PREV_M));
+  const labels = Array.from({ length: lastDay }, (_, i) => String(i + 1).padStart(2, "0"));
+  const cur = a => labels.map((_, i) => i + 1 <= E.AS_OF % 100 ? a[i + 1] : null);
+  const prev = a => labels.map((_, i) => i + 1 <= E.daysIn(E.PREV_M) ? a[i + 1] : null);
+  $("tGA").innerHTML = `Target GA Daily: ${fmt(R.t.gaD)}`;
+  $("tM1").innerHTML = `Target M1 Daily: ${fmt(R.t.m1D)}`;
+  const flat = v => labels.map(() => v || null);
+  E.draw("cDailyGA", { type: "line", data: { labels, datasets: [E.line("Previous GA", prev(R.dPrevGA), T.prev, { borderDash: [5, 4] }), E.line("Current GA", cur(R.dCurGA), T.S[0]),
+    E.line("Target GA Daily", flat(R.t.gaD), T.ink2, { borderDash: [2, 3], borderWidth: 1.5, tension: 0 })] }, options: E.lineOpts(T) });
+  E.draw("cDailyM1", { type: "line", data: { labels, datasets: [E.line("Previous M1", prev(R.dPrevM1), T.prev, { borderDash: [5, 4] }), E.line("Current M1", cur(R.dCurM1), T.S[0]),
+    E.line("Target M1 Daily", flat(R.t.m1D), T.ink2, { borderDash: [2, 3], borderWidth: 1.5, tension: 0 })] }, options: E.lineOpts(T) });
+  const TM = E.measures(R.total);
+  E.draw("cWeek", { type: "bar", data: { labels: ["W1", "W2", "W3", "W4"], datasets: [{ data: [1, 2, 3, 4].map(w => TM.weekVal(w)), backgroundColor: T.S[0], borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: "bottom", maxBarThickness: 48 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: E.axes(T), layout: { padding: { top: 16 } }, plugins: { tooltip: { callbacks: { label: c => "GA Runrate: " + fmt(c.parsed.y) } } } },
+    plugins: [E.barLabels(v => fmt(v), T)] });
+}
+function renderSim() {
+  EM.list($("simList"), V("simList").sim, k => E.blank(E.dict.stg[k]), k => E.blank(E.dict.st[k]), {
+    sort: (a, b) => b.M.pre - a.M.pre,
+    pick1: k => E.pk("simList", "stg", k, "Sim Type Group: " + E.blank(E.dict.stg[k])), pick2: k => E.pk("simList", "st", k, "Sim Type: " + E.blank(E.dict.st[k])),
+    big: M => fmt(M.rr),
+    meta: M => `Pre ${fmt(M.pre)} · Cur ${fmt(M.cur)} · <span class="${M.diff < 0 ? "down" : "up"}">${M.diff > 0 ? "+" : ""}${fmt(M.diff)}</span>`,
+    pills: M => EM.pill(M.mom, "MoM") + `<span class="pill zero"><span class="k">Thai</span>${E.pctTxt(M.thai)}</span>` });
+  $("bandTbl").innerHTML = E.bandHtml(R.bands);
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const rows = [...V("cGroupSim").gs.entries()].map(([k, a]) => ({ k, n: E.blank(E.dict.gs[k]), M: E.measures(a) })).filter(x => x.M.pre || x.M.rr).sort((a, b) => b.M.rr - a.M.rr);
+  $("gsBox").style.height = Math.max(140, rows.length * 56 + 40) + "px";
+  E.draw("cGroupSim", { type: "bar", data: { labels: rows.map(r => r.n), datasets: [
+      { label: "Previous GA", data: rows.map(r => r.M.pre), backgroundColor: T.prev, borderRadius: 3, maxBarThickness: 18 },
+      { label: "Current GA RR", data: rows.map(r => r.M.rr), backgroundColor: T.S[0], borderRadius: 3, maxBarThickness: 18 }] },
+    options: { ...E.chartPick("cGroupSim", el => { const r = rows[el.index]; return r && E.pk("cGroupSim", "gs", r.k, "Group Sim: " + r.n); }), indexAxis: "y", responsive: true, maintainAspectRatio: false, layout: { padding: { right: 40 } },
+      scales: { x: { grid: { color: T.grid }, beginAtZero: true, ticks: { callback: E.kfmt, maxTicksLimit: 5 } }, y: { grid: { display: false } } },
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.parsed.x)}` } } } },
+    plugins: [E.barLabels(v => fmt(v), T, true)] });
+}
+function renderTab() { if (!R) return; if (tab === "store") renderStore(); else if (tab === "daily") renderDaily(); else if (tab === "sim") renderSim(); }
+function update() { slicers.refresh(); V = FL.views(compute); R = V.R; renderTab(); }
+
+$("asOf").textContent = E.fmtDate(E.AS_OF);
+$("note").textContent = `Data exported ${E.data.generated}. Current month ${E.CUR_M}, previous ${E.PREV_M}; run rate = value × 31 ÷ ${E.DAY_NO}. ` +
+  `Targets: 7-11 = Target All Type (shop), RTR = RTR Target By AE Name (owner). Market share: RTR from Battle field, 7-11 = 100%. Tap a plan, sim type or Group Sim bar to filter; long-press to add more (tap again or ✕ to clear).`;
+slicers.refresh(); V = FL.views(compute); R = V.R;
+EM.tabs(["store", "daily", "sim"], t => { tab = t; renderTab(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gameplan Monitoring</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="assets/dash.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="data/dashboard-data.js"></script>
+<script src="assets/dash-engine.js"></script>
+<script src="assets/dash-gameplan.js"></script>
+<style>
+.wrap { max-width: 1320px; margin: 0 auto; padding: 16px 16px 40px; }
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 8px; }
+header.top h1 { font-size: 20px; margin: 0; flex: 1 1 220px; }
+header.top h1 small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+.asof { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; }
+.asof b { display: block; font-size: 11px; color: var(--muted); font-weight: 600; }
+.asof span { font-size: 18px; font-weight: 600; }
+.slicers { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 16px; position: sticky; top: 0; z-index: 1000; background: var(--page); padding: 8px 0; }
+.slicer[data-k="plan"] { max-width: 280px; flex-basis: 220px; }
+.grid { display: grid; gap: 16px; }
+.g-2 { grid-template-columns: 1fr 1fr; }
+.g-main { grid-template-columns: 3fr 2fr; }
+@media (max-width: 960px) { .g-2, .g-main { grid-template-columns: 1fr; } }
+section { margin-top: 16px; }
+.stack { display: grid; gap: 16px; align-content: start; }
+#tblPlan table td:first-child { font-weight: 600; }
+.sec-h { font-size: 15px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; margin: 22px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+<header class="top">
+  <nav class="pg-nav"><a class="home-link" href="index.html">⌂ Home</a><a class="home-link" href="Gameplan%20Monitoring%20Mobile.html">Mobile view</a></nav>
+  <h1>Gameplan Monitoring<small id="genInfo">Data By Store</small></h1>
+  <div class="asof"><b>AS of Date</b><span id="asOf">–</span></div>
+</header>
+<div class="slicers" id="slicers"></div>
+
+<div class="sec-h">Overall Game Plan Performance</div>
+<div class="card"><div class="tbl-wrap" id="tblPlan"></div></div>
+
+<section class="grid g-main">
+  <div class="card"><h2>Stores by %MoM GA <span class="sub">· bubble size = GA RR</span></h2>
+    <div class="legend"><span><i style="background:var(--good)"></i>Growth</span><span><i style="background:var(--bad)"></i>Decline</span><span><i style="background:var(--other)"></i>No change / no prev</span></div>
+    <div class="map" id="map"></div></div>
+  <div class="stack">
+    <div class="card"><h2>Weekly Performance <span class="sub">· GA run rate by week, current month</span></h2><div class="chart-box" style="height:220px"><canvas id="cWeek"></canvas></div></div>
+    <div class="card"><h2>GA by Sim Type</h2><div class="tbl-wrap" style="max-height:300px" id="tblSim"></div></div>
+  </div>
+</section>
+
+<section class="grid g-main">
+  <div class="card"><h2>GA by Sub-district &amp; Store <span class="sub">· sorted by %MoM · Commit from Close Gap Store</span></h2><div class="tbl-wrap" style="max-height:620px" id="tblSub"></div></div>
+  <div class="stack">
+    <div class="card"><h2>GA by Month &amp; DOC_TYP_GP</h2><div class="legend" id="lgDoc"></div><div class="chart-box" style="height:230px"><canvas id="cMonthDoc"></canvas></div></div>
+    <div class="card"><h2>GA by Month &amp; SIM_TYPE_GROUP</h2><div class="legend" id="lgSim"></div><div class="chart-box" style="height:230px"><canvas id="cMonthSim"></canvas></div></div>
+  </div>
+</section>
+
+<div class="sec-h">By Daily Performance</div>
+<div class="card"><h2 id="tDaily">Commit GA Daily</h2>
+  <div class="legend"><span><i class="dot"></i>Commit GA Daily</span><span><i style="background:var(--s1)"></i>Cur GA</span><span><i class="dash"></i>Pre GA</span></div>
+  <div class="chart-box" style="height:300px"><canvas id="cDaily"></canvas></div></div>
+
+<p class="note" id="note"></p>
+</div>
+
+<script>
+"use strict";
+if (!E.ok) { document.getElementById("app").innerHTML = E.noDataHtml; throw new Error("no data"); }
+const { $, fmt, pctTxt, esc, col: C } = E;
+
+/* ---------------- filters ---------------- */
+const FL = new E.Filters(GP.dims(), update);
+const slicers = E.buildSlicers($("slicers"), FL);
+const compute = () => GP.compute(FL);
+
+/* ---------------- render ---------------- */
+function renderPlanTable(R) {
+  if (!R.planList.length) { $("tblPlan").innerHTML = `<div class="empty">No game plans in the data</div>`; return; }
+  const cells = (M, c) => { const diff = M.rr - c;
+    return `<td>${fmt(M.pre)}</td><td>${fmt(M.cur)}</td><td>${fmt(M.rr)}</td>${E.pctCell(M.mom)}${E.pctCell(M.curWow)}<td>${fmt(c)}</td>${E.diffCell(diff)}${E.pctCell(c ? diff / c : null)}`; };
+  let h = `<table><thead><tr><th>Channel / Game Plan</th><th>Pre GA</th><th>Cur GA</th><th>GA RR</th><th>%MOM</th><th>%WOW</th><th>Commit GA</th><th>Diff Commit</th><th>%Commit</th></tr></thead><tbody>`;
+  // one block per channel (7-11, RTR, ...): channel subtotal row, then its plans by %MoM
+  const chans = [...new Set(R.planList.map(p => E.planChannel(p)))].sort((a, b) => E.channels.indexOf(a) - E.channels.indexOf(b));
+  chans.forEach(ch => {
+    const rows = R.planList.filter(p => E.planChannel(p) === ch).map(p => ({ p, M: E.measures(R.plans.get(p)), c: R.planCommit.get(p) || 0 }))
+      .sort((a, b) => (b.M.mom ?? -9) - (a.M.mom ?? -9));
+    const tot = rows.reduce((t, x) => E.merge(t, R.plans.get(x.p)), E.newAcc()), tc = rows.reduce((s, x) => s + x.c, 0);
+    const cid = E.pkChannel("tblPlan", ch);
+    h += `<tr class="ch-hdr${E.pickCls(cid)}"${E.pickAttr(cid)}><td>${esc(ch)} <span style="font-weight:400;color:var(--muted)">· ${rows.length} plan${rows.length > 1 ? "s" : ""} (sum; shops can be in more than one plan)</span></td>${cells(E.measures(tot), tc)}</tr>`;
+    rows.forEach(({ p, M, c }) => {
+      const [sd, ed] = E.planDates(p), id = E.pkPlan("tblPlan", p);
+      h += `<tr class="${E.pickCls(id).trim()}"${E.pickAttr(id)}><td style="padding-left:22px">${esc(p)}${sd ? ` <span style="font-weight:400;color:var(--muted)">· ${sd} → ${ed}</span>` : ""}</td>${cells(M, c)}</tr>`;
+    });
+  });
+  $("tblPlan").innerHTML = h + `</tbody></table>`;
+}
+let mapObj = null;
+function render(V) {
+  const R = V.R;
+  slicers.refresh();
+  renderPlanTable(V("tblPlan"));
+  if (!mapObj) mapObj = E.makeMap("map");
+  E.drawMomMap(mapObj, V("map").store);
+
+  const simCols = [
+    { h: "Pre GA", cell: M => `<td>${fmt(M.pre)}</td>` }, { h: "Cur GA", cell: M => `<td>${fmt(M.cur)}</td>` },
+    { h: "GA RR", cell: M => `<td>${fmt(M.rr)}</td>` }, { h: "Diff GA", cell: M => E.diffCell(M.diff) },
+    { h: "%MOM", cell: M => E.pctCell(M.mom) }, { h: "%WOW", cell: M => E.pctCell(M.curWow) }];
+  E.matrix($("tblSim"), V("tblSim").sim, k => E.blank(E.dict.stg[k]), k => E.blank(E.dict.st[k]), "Sim Type", simCols,
+    { pick1: k => E.pk("tblSim", "stg", k, "Sim Type Group: " + E.blank(E.dict.stg[k])), pick2: k => E.pk("tblSim", "st", k, "Sim Type: " + E.blank(E.dict.st[k])) });
+
+  // sub-district table with Close Gap commit
+  const RS = V("tblSub"), commitOf = RS.commitOf;
+  const subCols = [
+    { h: "Pre GA", cell: M => `<td>${fmt(M.pre)}</td>` }, { h: "Cur GA", cell: M => `<td>${fmt(M.cur)}</td>` },
+    { h: "GA RR", cell: M => `<td>${fmt(M.rr)}</td>` }, { h: "%MOM", cell: M => E.pctCell(M.mom) }, { h: "%WOW", cell: M => E.pctCell(M.curWow) },
+    { h: "Commit", cell: (M, a, k, l) => { const c = commitOf(k, l); return `<td>${c ? fmt(c) : ""}</td>`; } },
+    { h: "Diff Com", cell: (M, a, k, l) => { const c = commitOf(k, l); return c ? E.diffCell(M.rr - c) : "<td></td>"; } },
+    { h: "%Com", cell: (M, a, k, l) => { const c = commitOf(k, l); return E.pctCell(c ? (M.rr - c) / c : null); } }];
+  E.matrix($("tblSub"), RS.sub, k => E.blank(E.dict.sub[k]), k => E.stores[k][1], "SUB_DISTRICT_EN", subCols,
+    { sort: (a, b) => (a.M.mom ?? 9) - (b.M.mom ?? 9), pick1: k => E.pk("tblSub", "sub", k, "Sub-district: " + E.blank(E.dict.sub[k])), pick2: k => E.pkStore("tblSub", k) });
+
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const TM = E.measures(R.total);
+  const wk = [1, 2, 3, 4].map(w => TM.weekVal(w));
+  E.draw("cWeek", { type: "bar", data: { labels: ["Week1", "Week2", "Week3", "Week4"], datasets: [{ label: "GA Runrate", data: wk, backgroundColor: T.S[0], borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: "bottom", maxBarThickness: 56 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: E.axes(T, "Week of Month", "GA Runrate"), layout: { padding: { top: 16 } },
+      plugins: { tooltip: { callbacks: { label: c => "GA Runrate: " + fmt(c.parsed.y) } } } }, plugins: [E.barLabels(v => fmt(v), T)] });
+
+  const RD = V("cMonthDoc"), RG = V("cMonthSim");
+  const months = [...new Set([...RD.monthDoc.keys(), ...RG.monthStg.keys()])].sort((a, b) => a - b);
+  const docSer = E.seriesByMonth(RD.monthDoc, E.dict.doc, months), stgSer = E.seriesByMonth(RG.monthStg, E.dict.stg, months);
+  $("lgDoc").innerHTML = E.legendHtml(docSer, T); $("lgSim").innerHTML = E.legendHtml(stgSer, T);
+  E.draw("cMonthDoc", { type: "line", data: { labels: months.map(String), datasets: docSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, "Month", "GA", E.seriesPick("cMonthDoc", docSer, "doc", E.dict.doc)) });
+  E.draw("cMonthSim", { type: "line", data: { labels: months.map(String), datasets: stgSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, "Month", "GA", E.seriesPick("cMonthSim", stgSer, "stg", E.dict.stg)) });
+
+  const lastDay = Math.max(E.AS_OF % 100, E.daysIn(E.PREV_M));
+  const labels = Array.from({ length: lastDay }, (_, i) => String(i + 1).padStart(2, "0"));
+  $("tDaily").innerHTML = `Commit GA Daily: ${fmt(R.commitDaily)}`;
+  E.draw("cDaily", { type: "line", data: { labels, datasets: [
+      E.line("Commit GA Daily", labels.map(() => R.commitDaily || null), T.ink2, { borderDash: [2, 3], borderWidth: 1.5, tension: 0 }),
+      E.line("Cur GA", labels.map((_, i) => i + 1 <= E.AS_OF % 100 ? R.dCur[i + 1] : null), T.S[0]),
+      E.line("Pre GA", labels.map((_, i) => i + 1 <= E.daysIn(E.PREV_M) ? R.dPrev[i + 1] : null), T.prev, { borderDash: [5, 4] })] },
+    options: E.lineOpts(T, "Day", "GA") });
+}
+function update() { render(FL.views(compute)); }
+
+$("asOf").textContent = E.fmtDate(E.AS_OF);
+$("genInfo").textContent = `Data By Store · data exported ${window.DASH_DATA.generated}`;
+$("note").textContent = `Current month = ${E.CUR_M}, previous = ${E.PREV_M}; run rate = GA × 31 ÷ ${E.DAY_NO}. ` +
+  `7-11 plans: 1 (199→350) counts Mass 350 SIMs only, 2 (49→199) counts Mass 199 SIMs only, 3 counts all SIMs. RTR plans count all SIMs. ` +
+  `Commit in the sub-district table = Close Gap Store (7-11). Click a row, bubble or chart line to filter the page; Ctrl+click to select several (click again or ✕ to clear). Update data: python etl\\export_html.py`;
+update();
+</script>
+</body>
+</html>

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Overall Performance · Mobile</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="assets/dash.css">
+<link rel="stylesheet" href="assets/dash-mobile.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="data/dashboard-data.js"></script>
+<script src="assets/dash-engine.js"></script>
+<script src="assets/dash-overall.js"></script>
+<script src="assets/dash-mobile.js"></script>
+<style>
+.kpi-top { gap: 18px; }
+.band-card .tbl-wrap { max-height: none; } .band-card table { font-size: 12px; }
+.wk-meta { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="tb-row"><a class="home-link" href="index.html" aria-label="Home">⌂</a><h1>Overall Performance</h1><div class="asof">As of <b id="asOf">–</b></div></div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<main id="app">
+  <div class="m-slicers" id="slicers"></div>
+
+  <section class="view" id="v-overview">
+    <div id="kpis"></div>
+    <div class="card"><h2>Weekly Performance <span class="sub">GA run rate</span></h2><div class="chart-box" style="height:200px"><canvas id="cWeek"></canvas></div></div>
+  </section>
+
+  <section class="view" id="v-weekly" hidden>
+    <div class="seg" id="wkSeg"><button type="button" data-v="gs" aria-pressed="true">Group Sim</button><button type="button" data-v="doc" aria-pressed="false">Doc Type</button></div>
+    <div class="list" id="wkList"></div>
+    <div class="sec-title">GA by Sim Type</div>
+    <div class="list" id="simList"></div>
+    <div class="card band-card"><h2>AP1D by Price Band</h2><div class="tbl-wrap" id="bandTbl"></div></div>
+  </section>
+
+  <section class="view" id="v-areas" hidden>
+    <div class="sec-title">GA by Sub-district &amp; Shop</div>
+    <div class="list" id="subList"></div>
+    <div class="card"><h2>Shops by %MoM GA <span class="sub">green up · red down</span></h2><div class="map" id="mapMom"></div></div>
+    <div class="card"><h2>Shops by Segment</h2><div class="legend" id="lgSeg"></div><div class="map" id="mapSeg"></div></div>
+  </section>
+
+  <section class="view" id="v-trends" hidden>
+    <div class="card"><h2 id="tGA">Daily GA</h2>
+      <div class="legend"><span><i class="dash"></i>Previous</span><span><i style="background:var(--s1)"></i>Current</span><span><i class="dot"></i>Target daily</span></div>
+      <div class="chart-box"><canvas id="cDailyGA"></canvas></div></div>
+    <div class="card"><h2 id="tM1">Daily M1</h2>
+      <div class="legend"><span><i class="dash"></i>Previous</span><span><i style="background:var(--s1)"></i>Current</span><span><i class="dot"></i>Target daily</span></div>
+      <div class="chart-box"><canvas id="cDailyM1"></canvas></div></div>
+    <div class="card"><h2>GA by Month <span class="sub">Doc Type</span></h2><div class="legend" id="lgDoc"></div><div class="chart-box"><canvas id="cMonthDoc"></canvas></div></div>
+    <div class="card"><h2>GA by Month <span class="sub">Sim Type Group</span></h2><div class="legend" id="lgSim"></div><div class="chart-box"><canvas id="cMonthSim"></canvas></div></div>
+    <div class="card"><h2>GA by Day of Week <span class="sub">previous + current month</span></h2><div class="chart-box" style="height:200px"><canvas id="cDow"></canvas></div></div>
+    <p class="note" id="note"></p>
+  </section>
+</main>
+
+<script>
+"use strict";
+if (!E.ok) { document.getElementById("app").innerHTML = E.noDataHtml; throw new Error("no data"); }
+const { $, fmt, esc } = E;
+EM.nav([["overview", "Overview", "overview"], ["weekly", "Weekly", "sim"], ["areas", "Areas", "stores"], ["trends", "Trends", "trends"]]);
+
+const FL = new E.Filters(OV.dims(), update);
+const filters = EM.inlineFilters(FL, $("slicers"), $("chips"));
+let V = null, R = null, tab = null, wkBy = "gs";
+const maps = {};
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function renderOverview() {
+  const T = E.measures(R.total), tg = R.target, mk = R.market;
+  const ach = (v, t) => t ? E.pctTxt(v / t) : "–";
+  const apUp = T.pctAp1dCur - T.pctAp1dPrev;
+  const shareTxt = mk.rtrAvg != null ? E.pctTxt(mk.rtrAvg) : (mk.n711 ? "100%" : "–");
+  $("kpis").innerHTML = `
+    <div class="card"><div class="kpi-top">
+        <div><div class="kpi-label">GA RR (CUR)</div><div class="kpi-val">${fmt(T.rr)} <small>(${fmt(T.cur)})</small></div></div>
+        <div><div class="kpi-label">% Achieve</div><div class="kpi-val">${ach(T.rr, tg.ga)}</div></div></div>
+      <div class="kpi-deltas">${E.deltaHtml(T.rr - T.pre, T.pre, "Last Month")}${E.deltaHtml(T.rr - tg.ga, tg.ga, "Target")}</div></div>
+    <div class="kpi-pair">
+      <div class="card"><div class="kpi-label">Current Week GA · W${E.CUR_WEEK}</div><div class="kpi-val">${fmt(T.curWeek)}</div>
+        <div class="kpi-deltas">${E.deltaHtml(T.curWeek - T.prevWeek, T.prevWeek, "Last Week")}</div></div>
+      <div class="card"><div class="kpi-label">AP1D RR · %AP1D</div><div class="kpi-val">${fmt(T.ap1dRR)} <small>${E.pctTxt(T.pctAp1dCur)}</small></div>
+        <div class="kpi-deltas"><div class="delta"><span class="d ${apUp > 0.0005 ? "up" : apUp < -0.0005 ? "down" : "flat"}">${apUp >= 0 ? "▲ +" : "▼ "}${(apUp * 100).toFixed(0)} pts</span><br><span class="vs">vs ${E.pctTxt(T.pctAp1dPrev)} Last Month</span></div></div></div>
+    </div>
+    <div class="card"><div class="kpi-top">
+        <div><div class="kpi-label">M1 RR (CUR)</div><div class="kpi-val">${fmt(T.m1rr)} <small>(${fmt(T.m1c)})</small></div></div>
+        <div><div class="kpi-label">% Achieve</div><div class="kpi-val">${ach(T.m1rr, tg.m1)}</div></div></div>
+      <div class="kpi-deltas">${E.deltaHtml(T.m1rr - T.m1p, T.m1p, "Last Month")}${E.deltaHtml(T.m1rr - tg.m1, tg.m1, "Target")}</div></div>
+    <div class="card"><div class="kpi-top">
+        <div><div class="kpi-label">Market Share (True) · RTR avg</div><div class="kpi-val">${shareTxt}</div></div>
+        <div><div class="kpi-label">Market Size (RTR)</div><div class="kpi-val">${mk.size ? fmt(mk.size) : "–"}</div></div></div>
+      <div class="kpi-deltas"><div class="delta"><span class="vs">${mk.rtrOutlets} RTR shop(s) with market data${mk.n711 ? ` · ${mk.n711} 7-11 shop(s) = 100%` : ""}</span></div></div></div>`;
+  if (typeof Chart === "undefined") return;
+  const TH = E.theme(); E.initChartDefaults();
+  E.draw("cWeek", { type: "bar", data: { labels: ["W1", "W2", "W3", "W4"], datasets: [{ data: [1, 2, 3, 4].map(w => T.weekVal(w)), backgroundColor: TH.S[0], borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: "bottom", maxBarThickness: 48 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: E.axes(TH), layout: { padding: { top: 16 } }, plugins: { tooltip: { callbacks: { label: c => "GA Runrate: " + fmt(c.parsed.y) } } } },
+    plugins: [E.barLabels(v => fmt(v), TH)] });
+}
+
+function renderWeekly() {
+  const by = wkBy === "gs"
+    ? { src: "wkList", map: V("wkList").wkGs, d1: E.dict.gs, d2: E.dict.stg, c1: "gs", c2: "stg", l1: "Group Sim", l2: "Sim Type Group" }
+    : { src: "wkList", map: V("wkList").wkDoc, d1: E.dict.doc, d2: E.dict.dist, c1: "doc", c2: "dist", l1: "Doc Type", l2: "District" };
+  EM.list($("wkList"), by.map, k => E.blank(by.d1[k]), k => E.blank(by.d2[k]), {
+    sort: (a, b) => b.M.cur - a.M.cur,
+    big: M => fmt(M.curWeek),
+    meta: M => `<span class="wk-meta">${[1, 2, 3, 4].map(w => { const v = M.weekVal(w); return v == null ? "" : `W${w} ${fmt(v)}`; }).filter(Boolean).join(" · ")}</span>`,
+    pills: M => EM.pill(M.curWow, "WoW") + EM.pill(M.mom, "MoM"),
+    pick1: k => E.pk(by.src, by.c1, k, `${by.l1}: ${E.blank(by.d1[k])}`),
+    pick2: k => E.pk(by.src, by.c2, k, `${by.l2}: ${E.blank(by.d2[k])}`) });
+  EM.list($("simList"), V("simList").sim, k => E.blank(E.dict.stg[k]), k => E.blank(E.dict.st[k]), {
+    big: M => fmt(M.rr), meta: M => `Pre ${fmt(M.pre)} · Cur ${fmt(M.cur)} · <span class="${M.diff < 0 ? "down" : "up"}">${M.diff > 0 ? "+" : ""}${fmt(M.diff)}</span>`,
+    pills: M => EM.pill(M.mom, "MoM") + EM.pill(M.curWow, "WoW"),
+    pick1: k => E.pk("simList", "stg", k, "Sim Type Group: " + E.blank(E.dict.stg[k])), pick2: k => E.pk("simList", "st", k, "Sim Type: " + E.blank(E.dict.st[k])) });
+  $("bandTbl").innerHTML = E.bandHtml(R.bands);
+}
+
+function renderAreas() {
+  EM.list($("subList"), V("subList").sub, k => E.blank(E.dict.sub[k]), k => `${E.stores[k][1]}${E.stores[k][11] !== "7-11" ? " · " + E.stores[k][11] : ""}`, {
+    big: M => fmt(M.rr), meta: M => `Pre ${fmt(M.pre)} · Cur ${fmt(M.cur)} · <span class="${M.diff < 0 ? "down" : "up"}">${M.diff > 0 ? "+" : ""}${fmt(M.diff)}</span>`,
+    pills: M => EM.pill(M.mom, "MoM") + EM.pill(M.curWow, "WoW"),
+    pick2: k => E.pkStore("subList", k) });
+  if (!maps.mom) { maps.mom = E.makeMap("mapMom"); maps.seg = E.makeMap("mapSeg"); }
+  if (maps.mom) { maps.mom.map.invalidateSize(); E.drawMap(maps.mom, V("mapMom").store); }
+  $("lgSeg").innerHTML = E.segLegend("lgSeg", V("lgSeg").store);
+  if (maps.seg) { maps.seg.map.invalidateSize(); E.drawMap(maps.seg, V("mapSeg").store, p => E.segColour(p.s[3] || "")); }
+}
+
+function renderTrends() {
+  if (typeof Chart === "undefined") return;
+  const T = E.theme(); E.initChartDefaults();
+  const lastDay = Math.max(E.AS_OF % 100, E.daysIn(E.PREV_M));
+  const labels = Array.from({ length: lastDay }, (_, i) => String(i + 1).padStart(2, "0"));
+  const cur = a => labels.map((_, i) => i + 1 <= E.AS_OF % 100 ? a[i + 1] : null);
+  const prev = a => labels.map((_, i) => i + 1 <= E.daysIn(E.PREV_M) ? a[i + 1] : null);
+  const tGAd = R.target.ga / 31, tM1d = R.target.m1 / 31, flat = v => labels.map(() => v || null);
+  $("tGA").innerHTML = `Daily GA <span class="sub">Target ${fmt(tGAd)}/day</span>`;
+  $("tM1").innerHTML = `Daily M1 <span class="sub">Target ${fmt(tM1d)}/day</span>`;
+  const dash = { borderDash: [2, 3], borderWidth: 1.5, tension: 0 };
+  E.draw("cDailyGA", { type: "line", data: { labels, datasets: [E.line("Previous GA", prev(R.dPrevGA), T.prev, { borderDash: [5, 4] }), E.line("Current GA", cur(R.dCurGA), T.S[0]), E.line("Target", flat(tGAd), T.ink2, dash)] }, options: E.lineOpts(T) });
+  E.draw("cDailyM1", { type: "line", data: { labels, datasets: [E.line("Previous M1", prev(R.dPrevM1), T.prev, { borderDash: [5, 4] }), E.line("Current M1", cur(R.dCurM1), T.S[0]), E.line("Target", flat(tM1d), T.ink2, dash)] }, options: E.lineOpts(T) });
+
+  const RD = V("cMonthDoc"), RG = V("cMonthSim");
+  const months = [...new Set([...RD.monthDoc.keys(), ...RG.monthStg.keys()])].sort((a, b) => a - b), short = months.map(m => MON[m % 100 - 1]);
+  const docSer = E.seriesByMonth(RD.monthDoc, E.dict.doc, months), stgSer = E.seriesByMonth(RG.monthStg, E.dict.stg, months);
+  $("lgDoc").innerHTML = E.legendHtml(docSer, T); $("lgSim").innerHTML = E.legendHtml(stgSer, T);
+  E.draw("cMonthDoc", { type: "line", data: { labels: short, datasets: docSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, null, null, E.seriesPick("cMonthDoc", docSer, "doc", E.dict.doc)) });
+  E.draw("cMonthSim", { type: "line", data: { labels: short, datasets: stgSer.map((s, i) => E.line(s.name, s.data, s.other ? T.other : T.S[i], { pointRadius: 3 })) }, options: E.lineOpts(T, null, null, E.seriesPick("cMonthSim", stgSer, "stg", E.dict.stg)) });
+
+  const dn = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  E.draw("cDow", { type: "bar", data: { labels: dn, datasets: [{ label: "GA", data: [...V("cDow").dow], backgroundColor: dn.map((d, i) => !E.pickedIn("cDow") || E.isPicked(E.pkDow("cDow", i, d)) ? T.S[0] : T.S[0] + "55"), borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: "bottom", maxBarThickness: 32 }] },
+    options: { ...E.chartPick("cDow", el => E.pkDow("cDow", el.index, dn[el.index])), responsive: true, maintainAspectRatio: false, scales: E.axes(T), layout: { padding: { top: 16 } } },
+    plugins: [E.barLabels(v => fmt(v), T)] });
+}
+
+function renderTab() { if (!R) return; ({ overview: renderOverview, weekly: renderWeekly, areas: renderAreas, trends: renderTrends })[tab]?.(); }
+function update() { filters.refresh(); V = FL.views(() => OV.compute(FL)); R = V.R; renderTab(); }
+
+$("wkSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  wkBy = b.dataset.v; $("wkSeg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  renderWeekly();
+});
+$("asOf").textContent = E.fmtDate(E.AS_OF);
+$("note").textContent = `Data exported ${E.data.generated}. Run rate = value × 31 ÷ (AS of day − 1). Target = Target By AE Name (7-11) / RTR Target By AE Name (RTR). ` +
+  `Tap a row, bubble, bar or chart line to filter; long-press to add more (tap again or ✕ to clear).`;
+filters.refresh(); V = FL.views(() => OV.compute(FL)); R = V.R;
+EM.tabs(["overview", "weekly", "areas", "trends"], t => { tab = t; renderTab(); });
+</script>
+</body>
+</html>

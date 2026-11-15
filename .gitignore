@@ -1,0 +1,18 @@
+# --- never upload: source files with raw data, local settings, old prototypes ---
+source/
+_archive/
+logs/
+.mcp.json
+__pycache__/
+*.pyc
+*.bak
+~$*
+# working files dropped in the project folder (store-level data / originals)
+*.xlsx
+*.xls
+*.csv
+/*.pdf
+
+# --- data: only the file the pages read (the site is behind Cloudflare Access) ---
+data/*
+!data/dashboard-data.js
