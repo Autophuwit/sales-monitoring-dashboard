@@ -13,7 +13,7 @@ the same plans shown in [Gameplan Monitoring](../../Gameplan%20Monitoring%20Desk
 |---|---|---|---|
 | 7-11 | [1. Increase ARPU (199 → 350)](#1-increase-arpu-199--350) | 9 stores | **+10%** average growth of SIM 350 |
 | 7-11 | [2. Increase ARPU (49 → 199)](#2-increase-arpu-49--199) | 10 stores | **+15%** average growth of SIM 199 |
-| 7-11 | [3. Increase GA](#3-increase-ga) | 112 stores | **+12%** Gross Add in focus areas |
+| 7-11 | [3. Increase GA](#3-increase-ga) | 11 stores | **+12%** Gross Add in focus areas |
 | RTR | [1. Win Market Share](#1-win-market-share) | stores losing to AIS | **+15%** Gross Add in focus stores |
 | RTR | [2. Potential Store](#2-potential-store) | 24 stores | **+13%** Gross Add in focus stores |
 
@@ -91,7 +91,7 @@ target per store based on its capacity. *9 stores.*
 **Customer segment & pain point** — Areas that already sell high-ARPU SIMs, mainly to **European and other foreign
 tourists**. In the **low season** fewer tourists came, so sales dropped.
 
-**Plan** — Focus on the stores in these tourist areas (ARPU × GA matrix: high ARPU, GA falling) and set a target per store. *112 stores.*
+**Plan** — Focus on the stores in these tourist areas (ARPU × GA matrix: high ARPU, GA falling) and set a target per store. *11 stores.*
 
 **Action points**
 1. **"Get connected in 3 minutes" guides** that show the walk from nearby **hotels and restaurants popular with foreigners** to the 7-11 store, placed in those hotels and restaurants.
