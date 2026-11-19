@@ -12,7 +12,7 @@ site is plain static files behind a login.
 <p align="center"><img src="docs/images/overall-desktop.png" width="860" alt="Overall Performance dashboard"></p>
 
 **Scale:** ~650 stores across 3 channels · ~96k aggregated daily sales rows over 7 months · 3 dashboards × desktop + mobile ·
-one-command monthly update or an Airflow DAG · 25 automated tests.
+one-command monthly update or an Airflow DAG · 26 automated tests.
 
 ## Impact
 
@@ -106,7 +106,7 @@ flowchart LR
 | **Storage** | Star schema in SQL Server Express, idempotent month-replace loads in one transaction, guarded so an empty or partial file never replaces a loaded month, load log. | [sql/](sql/) · [docs/data-model.md](docs/data-model.md) |
 | **Serve** | Exports one compact file (columnar arrays + dictionary encoding). | [etl/export_html.py](etl/export_html.py) |
 | **Compute & UI** | Re-calculates every metric in the browser on each filter change; Chart.js charts, Leaflet maps. | [assets/](assets/) |
-| **Schedule** | `update.ps1` for a manual run, or the Airflow DAG: waits for the sales file, retries, alerts on failure, backfills past months. | [dags/](dags/bma_east_update.py) |
+| **Schedule** | `update.ps1` for a manual run (in use), or the Airflow DAG (written, not yet deployed): waits for the sales file, retries, alerts on failure, re-runs a past month on request. | [dags/](dags/bma_east_update.py) |
 | **Deploy** | Push to GitHub → Cloudflare deploys the static site; Cloudflare Access (email one-time PIN) restricts who can open it. | [update.ps1](update.ps1) |
 
 ---
@@ -158,9 +158,10 @@ sql/03_channel_model.sql
 .\update.ps1 -NoPush            # update locally, then open index.html
 ```
 
-**Scheduled (Airflow):** copy [dags/bma_east_update.py](dags/bma_east_update.py) to the Airflow `dags/` folder and set
-`BMA_HOME`, `BMA_SALES_DIR` and `BMA_ALERT_TO`. Runs daily at 08:00; re-load past months with
-`airflow dags backfill -s 2026-05-01 -e 2026-07-31 bma_east_update`.
+**Scheduled (Airflow) — not yet deployed; the templates are render-tested only:** copy [dags/bma_east_update.py](dags/bma_east_update.py)
+to the Airflow `dags/` folder and set `BMA_HOME`, `BMA_SALES_DIR` and `BMA_ALERT_TO`. Runs daily at 08:00 for the current month;
+re-load a past month by triggering the DAG with config `{"month": "202605"}` (one run per month — a date-range
+`airflow dags backfill` on a daily schedule would reload each month ~30 times).
 
 **Try it without a database:** generate synthetic demo data, then open `index.html`.
 ```powershell

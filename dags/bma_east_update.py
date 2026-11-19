@@ -1,17 +1,24 @@
 """
 Airflow version of update.ps1:  wait for the sales file -> load sales -> load plans -> export -> publish.
 
-  Daily at 08:00 (Bangkok). Each run works on the month of its data interval, so
-    airflow dags backfill -s 2026-05-01 -e 2026-07-31 bma_east_update     # re-run May-July
-  is safe: every load replaces its month (delete + insert, one transaction) and refuses an
+  Status: written as the next step after update.ps1 - render-tested, not yet deployed on an Airflow server.
+
+  Daily at 08:00 (Bangkok). Each run works on the month of its data interval (the current month).
+  Re-run / back-fill a past month: Trigger DAG w/ config {"month": "202605"} - one run per month.
+  (Not `airflow dags backfill` over a date range: on a daily schedule that is one run per day,
+  ~30 identical reloads of each month.)
+  Re-running is safe: every load replaces its month (delete + insert, one transaction) and refuses an
   empty or partial file (load_sales.check_before_replace), so a re-run cannot duplicate or wipe data.
 
-  Trigger options (Trigger DAG w/ config):  {"force": true}      reload sales files even if unchanged
+  Trigger options (Trigger DAG w/ config):  {"month": "202605"}  run for that month instead of the current one
+                                             {"force": true}      reload sales files even if unchanged
                                              {"skip_plan": true}  sales only
                                              {"publish": false}   update the data file, do not push
 
   Failure handling
-    - every script exits 1 when a file / tab fails -> the task fails -> retried 2x (10, then 20 min)
+    - every script exits 1 when a file / tab fails -> the task fails
+    - load tasks retry once (10 min) - enough for a dropped SQL Server connection; a guard failure
+      (empty / partial file) fails the same way every time, so more retries only delay the alert
     - after the last retry: e-mail + on_failure_callback; export and publish do not run,
       so a broken load is never published (same rule as update.ps1)
     - max_active_runs=1: one run at a time writes to BMA_East
@@ -34,7 +41,8 @@ SALES_DIR = os.environ.get("BMA_SALES_DIR", "/data/7-11")        # folder with R
 ALERT_TO = os.environ.get("BMA_ALERT_TO", "data-team@example.com").split(",")
 
 # Jinja, rendered per run
-MONTH = "{{ data_interval_start.in_timezone('Asia/Bangkok').strftime('%Y%m') }}"
+#   month from conf goes through | int, so only digits ever reach the bash command
+MONTH = "{{ (dag_run.conf.get('month') | int) or data_interval_start.in_timezone('Asia/Bangkok').strftime('%Y%m') }}"
 FORCE = "{{ '--force' if dag_run.conf.get('force') else '' }}"
 SKIP_PLAN = "{{ 'yes' if dag_run.conf.get('skip_plan') else 'no' }}"
 PUBLISH = "{{ 'no' if dag_run.conf.get('publish') == False else 'yes' }}"
@@ -43,8 +51,10 @@ PUBLISH = "{{ 'no' if dag_run.conf.get('publish') == False else 'yes' }}"
 def alert(context):
     """Last retry failed: log which task / month, so the alert channel shows where to look."""
     ti = context["task_instance"]
+    month = (context["dag_run"].conf or {}).get("month") \
+        or context["data_interval_start"].in_timezone("Asia/Bangkok").strftime("%Y%m")
     logging.error("BMA East update FAILED: task=%s month=%s try=%s log=%s",
-                  ti.task_id, context["data_interval_start"].strftime("%Y%m"), ti.try_number, ti.log_url)
+                  ti.task_id, month, ti.try_number, ti.log_url)
 
 
 default_args = {
@@ -63,7 +73,7 @@ with DAG(
     description="Load sales + plans into BMA_East, export dashboard data, publish",
     schedule="0 8 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Bangkok"),
-    catchup=False,                      # past months only on request (airflow dags backfill)
+    catchup=False,                      # past months only on request (trigger with {"month": "yyyymm"})
     max_active_runs=1,
     default_args=default_args,
     dagrun_timeout=timedelta(hours=2),
@@ -82,6 +92,7 @@ with DAG(
         task_id="load_sales",
         bash_command=f"cd {BMA_HOME} && python etl/load_sales.py --folder {SALES_DIR} --only {MONTH} {FORCE}",
         execution_timeout=timedelta(minutes=45),
+        retries=1,                      # see "Failure handling" above
     )
 
     load_plan = BashOperator(
@@ -89,6 +100,7 @@ with DAG(
         bash_command=(f'if [ "{SKIP_PLAN}" = "yes" ]; then echo "sales only - plans skipped"; '
                       f"else cd {BMA_HOME} && python etl/load_plan.py --month {MONTH}; fi"),
         execution_timeout=timedelta(minutes=30),
+        retries=1,
     )
 
     export = BashOperator(

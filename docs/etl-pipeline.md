@@ -62,7 +62,8 @@ The result (~7 MB for 7 months) loads once; all metrics are then computed in the
 
 ## Scheduling — [dags/bma_east_update.py](../dags/bma_east_update.py)
 
-The Airflow DAG runs the same steps as `update.ps1`, daily at 08:00:
+The Airflow DAG runs the same steps as `update.ps1`, daily at 08:00 (written as the next step after `update.ps1`;
+render-tested, not yet deployed on an Airflow server):
 
 ```
 wait_for_sales_file -> load_sales -> load_plan -> export_dashboard_data -> publish
@@ -70,13 +71,13 @@ wait_for_sales_file -> load_sales -> load_plan -> export_dashboard_data -> publi
 
 | | |
 |---|---|
-| Month | taken from the run's data interval, passed as `--only` / `--month` |
+| Month | the run's data interval (current month), or `{"month": "yyyymm"}` from the trigger config; passed as `--only` / `--month` |
 | Waiting | file sensor polls every 15 min for the month's sales file (reschedule mode, up to 6 h) |
-| Retry | 2 retries with exponential back-off (10, 20 min); every script exits 1 when a file or tab fails |
+| Retry | load tasks retry once after 10 min (a dropped connection); a guard failure (empty / partial file) fails the same way every time, so more retries would only delay the alert. Every script exits 1 when a file or tab fails |
 | Alert | e-mail + failure callback after the last retry; later steps do not run, so nothing is published |
-| Backfill | `airflow dags backfill -s <start> -e <end> bma_east_update` — safe because each load replaces its month and refuses empty / partial files |
+| Backfill | trigger once per month with `{"month": "yyyymm"}` — safe because each load replaces its month and refuses empty / partial files. Not `airflow dags backfill` over a date range: on a daily schedule that is one run per day |
 | Concurrency | `max_active_runs=1`, so two runs never write to the database at the same time |
-| Options | trigger with `{"force": true}`, `{"skip_plan": true}` or `{"publish": false}` |
+| Options | trigger with `{"month": "yyyymm"}`, `{"force": true}`, `{"skip_plan": true}` or `{"publish": false}` |
 
 ## Logging
 
