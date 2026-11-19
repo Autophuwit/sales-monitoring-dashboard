@@ -113,6 +113,35 @@ class ReadSalesFile(unittest.TestCase):
             load_sales.read_file(path, load_sales.PROVINCE)
 
 
+class ReplaceGuard(unittest.TestCase):
+    """load_sales.check_before_replace: an empty or partial file must never wipe a loaded month."""
+
+    def setUp(self):
+        import pandas as pd
+        self.fact = pd.DataFrame({"TM_KEY_DAY": [20260701] * 60})
+
+    def test_empty_file_is_refused(self):
+        import pandas as pd
+        with self.assertRaisesRegex(ValueError, "NOT replaced"):
+            load_sales.check_before_replace(202607, pd.DataFrame(), {"rows_kept": 0}, loaded_rows=1000)
+
+    def test_empty_file_is_refused_even_for_a_new_month(self):
+        import pandas as pd
+        with self.assertRaisesRegex(ValueError, "matched the province filter"):
+            load_sales.check_before_replace(202607, pd.DataFrame(), {"rows_kept": 0}, loaded_rows=0)
+
+    def test_partial_file_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "partial file"):
+            load_sales.check_before_replace(202607, self.fact, {"rows_kept": 60}, loaded_rows=200)
+
+    def test_partial_file_allowed_on_request(self):
+        load_sales.check_before_replace(202607, self.fact, {"rows_kept": 60}, loaded_rows=200, allow_drop=True)
+
+    def test_normal_reload_and_first_load_pass(self):
+        load_sales.check_before_replace(202607, self.fact, {"rows_kept": 60}, loaded_rows=100)   # 60% of loaded
+        load_sales.check_before_replace(202607, self.fact, {"rows_kept": 60}, loaded_rows=0)     # month not loaded yet
+
+
 class DemoData(unittest.TestCase):
     """make_demo_data writes a valid version-3 file and never overwrites a real export."""
 

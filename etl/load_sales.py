@@ -4,14 +4,16 @@ Load the monthly sales txt files (REPORT_CS_TRUE_DTAC_yyyymm.txt) into BMA_East.
   python etl\\load_sales.py                 # load new / changed files from the 7-11 folder
   python etl\\load_sales.py --force         # reload every file
   python etl\\load_sales.py --only 202607   # just one month
+  python etl\\load_sales.py --only 202607 --allow-drop   # accept a much smaller file than what is loaded
 
 What it does for each file
   1. reads it in chunks (pipe-delimited, Thai Windows-874), by column NAME
   2. keeps only rows of the TDS_PROVINCE below
   3. sums GA / M1 / AP1D per day x store x SIM type x doc type
-  4. adds new stores / SIM types / doc types to the dim tables
-  5. replaces that month in fact.SalesDaily (delete + insert, one transaction)
-Prints counts only - never data values.
+  4. checks it is safe to replace the month (not empty, not much smaller than what is loaded) - else stops, nothing deleted
+  5. adds new stores / SIM types / doc types to the dim tables
+  6. replaces that month in fact.SalesDaily (delete + insert, one transaction)
+Prints counts only - never data values. Exits 1 if any file failed, so update.ps1 / the scheduler stops.
 """
 import argparse
 import csv
@@ -35,6 +37,7 @@ NEEDED = ["TM_KEY_DAY", "COMPANY", "SIM_TYPE", "GROUP_SIM", "PARTNER_CODE", "PAR
 KEYS = ["TM_KEY_DAY", "PARTNER_CODE", "SIM_TYPE", "DOC_TYP_GP"]
 NUMS = ["GA", "REV_AMT", "AP1D", "AP1D_AMT"] + BAND_COLS
 TARGET_TYPE = {"MASS": "Mass&Migrant", "MIGRANT": "Mass&Migrant", "TOURIST": "Tourist"}
+MIN_KEEP_RATIO = 0.5   # a new file with < 50% of the fact rows already loaded for the month is treated as incomplete
 
 
 def read_file(path, province):
@@ -78,6 +81,23 @@ def read_file(path, province):
     store = pd.concat(stores).drop_duplicates("PARTNER_CODE")
     sim = pd.concat(sims).drop_duplicates("SIM_TYPE")
     return fact, store, sim, stats
+
+
+def check_before_replace(month, fact, stats, loaded_rows, allow_drop=False):
+    """Raise before anything is deleted if the new data would wipe or shrink the month.
+    loaded_rows = fact.SalesDaily rows already in the database for the month."""
+    if stats["rows_kept"] == 0 or len(fact) == 0:
+        raise ValueError(f"no rows for {month} matched the province filter - month NOT replaced "
+                         f"(check the TDS_PROVINCE text); {loaded_rows:,} loaded rows kept")
+    if loaded_rows and not allow_drop and len(fact) < MIN_KEEP_RATIO * loaded_rows:
+        raise ValueError(f"only {len(fact):,} fact rows vs {loaded_rows:,} already loaded for {month} "
+                         f"(< {MIN_KEEP_RATIO:.0%}) - looks like a partial file, month NOT replaced; "
+                         f"re-run with --allow-drop if this is expected")
+
+
+def loaded_rows(conn, month):
+    lo, hi = month * 100 + 1, month * 100 + 31
+    return conn.cursor().execute("SELECT COUNT(*) FROM fact.SalesDaily WHERE date_key BETWEEN ? AND ?", lo, hi).fetchone()[0]
 
 
 def write_month(conn, month, fact, store, sim, load_id):
@@ -167,6 +187,7 @@ def main():
     ap.add_argument("--province", default=PROVINCE)
     ap.add_argument("--only", help="yyyymm - load just this month")
     ap.add_argument("--force", action="store_true", help="reload even if the file is unchanged")
+    ap.add_argument("--allow-drop", action="store_true", help=f"replace the month even if the file has < {MIN_KEEP_RATIO:.0%} of the loaded rows")
     a = ap.parse_args()
 
     files = sorted(glob.glob(os.path.join(a.folder, "REPORT_CS_TRUE_DTAC_*.txt")))
@@ -176,6 +197,7 @@ def main():
         sys.exit(f"No REPORT_CS_TRUE_DTAC_*.txt files found in {a.folder}")
     conn = bma_db.connect(a.server, a.db)
     print(f"Province filter: {a.province}\n")
+    failed = []
     for path in files:
         name = os.path.basename(path)
         m = re.search(r"(\d{6})", name)
@@ -192,23 +214,28 @@ def main():
         load_id = bma_db.log_start(conn, "fact.SalesDaily", name, month, size, mod)
         try:
             fact, store, sim, st = read_file(path, a.province)
-            other_month = int(((fact["TM_KEY_DAY"] // 100) != month).sum()) if len(fact) else 0
+            # rows dated in another month would escape this month's delete and be duplicated on a re-run
+            in_month = (fact["TM_KEY_DAY"] // 100) == month
+            other_month = int((~in_month).sum())
+            fact = fact[in_month]
+            check_before_replace(month, fact, st, loaded_rows(conn, month), a.allow_drop)
             res = write_month(conn, month, fact, store, sim, load_id)
             msg = (f"read {st['rows_read']:,} | kept {st['rows_kept']:,} | bad code {st['bad_code']:,} | "
                    f"stores {len(store):,} (new {res['new_stores']}) | SIM types {len(sim)} (new {res['new_sim_types']}) | "
                    f"fact rows {res['inserted_rows']:,} (replaced {res['replaced_rows']:,}) | AP1D band rows {res['band_rows']:,}"
-                   + (f" | WARNING {other_month} rows dated outside {month}" if other_month else ""))
+                   + (f" | WARNING {other_month} rows dated outside {month} - not loaded" if other_month else ""))
             bma_db.log_end(conn, load_id, "success", res["inserted_rows"], msg)
             print(f"{name}: OK in {time.time() - t0:,.0f}s\n   {msg}")
-            if st["rows_kept"] == 0:
-                print("   WARNING: no rows matched the province filter - check the TDS_PROVINCE text")
         except Exception as e:
             bma_db.log_end(conn, load_id, "failed", None, str(e))
             print(f"{name}: FAILED - {e}")
+            failed.append(name)
     left = conn.cursor().execute("SELECT COUNT(*) FROM dim.SimType WHERE sim_type_group = N'Other'").fetchone()[0]
     if left:
         print(f"\nNote: {left} SIM type(s) are grouped as 'Other'. Add them to etl.SimTypeGroupMap if they need their own group.")
     conn.close()
+    if failed:
+        sys.exit(f"\n{len(failed)} file(s) failed: {', '.join(failed)} - previous data for those months is unchanged.")
 
 
 if __name__ == "__main__":

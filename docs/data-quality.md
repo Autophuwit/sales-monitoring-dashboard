@@ -18,6 +18,10 @@ bucket, or log it.
 | Share typed as 35 or 0.35 | `load_plan.share` | Both read as 35% |
 | Store with no coordinates | dashboards | Still in all tables and totals; only left off the maps |
 | Partial month (current) | metrics | Run rate scales GA to 31 days; week 4 and the current week are normalised to 7 days ([metrics](metrics.md)) |
+| Empty sales file, or province text changed so nothing matches | `load_sales.check_before_replace` (before the delete) | Load **stops**, logged as `failed`; the month keeps its loaded data |
+| Partial sales file (< 50% of the rows already loaded for the month) | `load_sales.check_before_replace` | Load **stops**; re-run with `--allow-drop` only if the drop is expected |
+| Rows dated in another month | `load_sales.main` | Not loaded (they would escape that month's delete and be duplicated); count shown as a WARNING |
+| A file or tab fails | `load_sales` / `load_plan` | Its transaction rolls back; the script exits 1, so `update.ps1` / Airflow stop before export and publish |
 | Re-running a load | all month loads | Delete + insert in one transaction → same result every time |
 
 ## Monitoring a load
@@ -40,4 +44,4 @@ SELECT sim_type FROM dim.SimType WHERE sim_type_group = 'Other';
 ```
 
 Automated tests ([tests/test_etl.py](../tests/test_etl.py)) cover the cell cleaning rules, the area filter,
-bad-code counting, aggregation and the missing-column error.
+bad-code counting, aggregation, the missing-column error and the replace guard (empty / partial file).

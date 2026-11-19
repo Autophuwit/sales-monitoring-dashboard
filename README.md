@@ -12,7 +12,7 @@ site is plain static files behind a login.
 <p align="center"><img src="docs/images/overall-desktop.png" width="860" alt="Overall Performance dashboard"></p>
 
 **Scale:** ~650 stores across 3 channels · ~96k aggregated daily sales rows over 7 months · 3 dashboards × desktop + mobile ·
-one-command monthly update · 20 automated tests.
+one-command monthly update or an Airflow DAG · 25 automated tests.
 
 ## Impact
 
@@ -103,9 +103,10 @@ flowchart LR
 |---|---|---|
 | **Ingest** | Reads large monthly files in chunks by column name, keeps the 8 area districts, aggregates to day × store × SIM × doc type. Skips files that have not changed. | [etl/load_sales.py](etl/load_sales.py) |
 | **Master & plan data** | Loads store profiles for both channels, owner/store targets, game plans, close gap and market share; merges RTR stores that have two partner codes into one outlet; writes unmatched names to a log. | [etl/load_plan.py](etl/load_plan.py) |
-| **Storage** | Star schema in SQL Server Express, idempotent month-replace loads in one transaction, load log. | [sql/](sql/) · [docs/data-model.md](docs/data-model.md) |
+| **Storage** | Star schema in SQL Server Express, idempotent month-replace loads in one transaction, guarded so an empty or partial file never replaces a loaded month, load log. | [sql/](sql/) · [docs/data-model.md](docs/data-model.md) |
 | **Serve** | Exports one compact file (columnar arrays + dictionary encoding). | [etl/export_html.py](etl/export_html.py) |
 | **Compute & UI** | Re-calculates every metric in the browser on each filter change; Chart.js charts, Leaflet maps. | [assets/](assets/) |
+| **Schedule** | `update.ps1` for a manual run, or the Airflow DAG: waits for the sales file, retries, alerts on failure, backfills past months. | [dags/](dags/bma_east_update.py) |
 | **Deploy** | Push to GitHub → Cloudflare deploys the static site; Cloudflare Access (email one-time PIN) restricts who can open it. | [update.ps1](update.ps1) |
 
 ---
@@ -116,6 +117,8 @@ flowchart LR
   `dim.Store` (partner code) maps to `dim.Outlet` (the physical shop), so sales, targets and plans for both codes roll up to
   one store and both channels share every table and page, with a Channel filter instead of separate reports.
 - **Idempotent, auditable loads.** Each month is deleted and re-inserted in one transaction; re-running is always safe.
+  Before anything is deleted, the new data is checked: an empty file, or one with less than half the rows already loaded,
+  stops the load and the month keeps its data. Rows dated in another month are not loaded, so they cannot be duplicated.
   Every load is recorded in `etl.LoadLog` (file, size, modified time, rows, status), which is also how unchanged files are skipped.
 - **Metrics in the browser.** The site needs no server or database connection. The data file is a pre-aggregated
   daily snapshot (~7 MB), so all filters and cross-filters re-compute instantly on the client.
@@ -155,6 +158,10 @@ sql/03_channel_model.sql
 .\update.ps1 -NoPush            # update locally, then open index.html
 ```
 
+**Scheduled (Airflow):** copy [dags/bma_east_update.py](dags/bma_east_update.py) to the Airflow `dags/` folder and set
+`BMA_HOME`, `BMA_SALES_DIR` and `BMA_ALERT_TO`. Runs daily at 08:00; re-load past months with
+`airflow dags backfill -s 2026-05-01 -e 2026-07-31 bma_east_update`.
+
 **Try it without a database:** generate synthetic demo data, then open `index.html`.
 ```powershell
 python etl/make_demo_data.py --out data/dashboard-data.js
@@ -163,7 +170,7 @@ python etl/make_demo_data.py --out data/dashboard-data.js
 ## Tests
 
 ```powershell
-python -m unittest discover -s tests -v   # ETL: cell cleaning, area filter, aggregation, bad codes
+python -m unittest discover -s tests -v   # ETL: cell cleaning, area filter, aggregation, bad codes, replace guard
 node --test tests/                        # metrics: run rate, MoM, WoW, period, filters, targets, alerts
 ```
 Both run on every push via GitHub Actions ([.github/workflows/tests.yml](.github/workflows/tests.yml)).
@@ -175,10 +182,11 @@ index.html, *.html     dashboards (desktop + mobile) and home page
 assets/                dash-engine.js (metrics, filters), page logic, styles
 data/                  dashboard-data.js (exported snapshot)
 etl/                   Python loaders and export
+dags/                  Airflow DAG (scheduled version of update.ps1)
 sql/                   database build scripts
 tests/                 Python + JavaScript unit tests
 docs/                  documentation and screenshots
 update.ps1             one-command update and publish
 ```
 
-**Tech:** Python (pandas, openpyxl, pyodbc) · SQL Server / T-SQL · JavaScript · Chart.js · Leaflet · GitHub Actions · Cloudflare
+**Tech:** Python (pandas, openpyxl, pyodbc) · SQL Server / T-SQL · JavaScript · Chart.js · Leaflet · Airflow · GitHub Actions · Cloudflare

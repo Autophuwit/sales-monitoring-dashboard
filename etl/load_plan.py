@@ -431,6 +431,7 @@ def main():
         ("Close Gap Store", t711, "fact.CloseGap", lambda df: close_gap_711(x, df)),
         (a.market_sheet, tmkt, "fact.MarketShare", lambda df: market_share(x, df)),
     ]
+    failed = []
     for tab, src, table, fn in steps:
         if tab not in src:
             if src:
@@ -445,6 +446,7 @@ def main():
         except Exception as e:
             bma_db.log_end(conn, load_id, "failed", None, str(e))
             print(f"{tab:22}: FAILED - {e}")
+            failed.append(tab)
     if "RTR Store Profile" in trtr:
         print(f"{'(RTR profile check)':22}: {finish_rtr(x)}")
         conn.commit()
@@ -457,6 +459,8 @@ def main():
         pd.DataFrame(x.unmatched, columns=["tab", "name_in_sheet", "detail", "reason"]).to_csv(out, index=False, encoding="utf-8-sig")
         print(f"\n{len(x.unmatched)} row(s) could not be matched -> {out}")
     conn.close()
+    if failed:
+        sys.exit(f"\n{len(failed)} step(s) failed: {', '.join(failed)} - those tables keep their previous data for {a.month}.")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ Run all steps with **`.\update.ps1`** ([update.ps1](../update.ps1)); it stops at
 | Clean | trims text, converts codes / dates / numbers; rows with a non-numeric or out-of-range partner code or date are dropped and counted |
 | Aggregate | sums GA, M1 revenue, AP1D and the 16 AP1D price-band columns per day × partner code × SIM type × doc type |
 | New members | adds unseen doc types, SIM types (group from `etl.SimTypeGroupMap`, else `Other`) and partner codes; a code with no shop gets a new outlet (`7-11` if the file says so, else `Other`) |
+| Guard | before anything is deleted: stops if the file has no rows for the area, or fewer than 50% of the rows already loaded for the month (`--allow-drop` to accept); rows dated in another month are not loaded |
 | Write | **deletes the month and inserts it again in one transaction** — re-running gives the same result |
 | Incremental | skips a file whose size and modified time match its last successful load in `etl.LoadLog`; `--force` reloads all, `--only yyyymm` one month |
 
@@ -59,8 +60,26 @@ Reads the model and writes `data/dashboard-data.js`:
 
 The result (~7 MB for 7 months) loads once; all metrics are then computed in the browser.
 
+## Scheduling — [dags/bma_east_update.py](../dags/bma_east_update.py)
+
+The Airflow DAG runs the same steps as `update.ps1`, daily at 08:00:
+
+```
+wait_for_sales_file -> load_sales -> load_plan -> export_dashboard_data -> publish
+```
+
+| | |
+|---|---|
+| Month | taken from the run's data interval, passed as `--only` / `--month` |
+| Waiting | file sensor polls every 15 min for the month's sales file (reschedule mode, up to 6 h) |
+| Retry | 2 retries with exponential back-off (10, 20 min); every script exits 1 when a file or tab fails |
+| Alert | e-mail + failure callback after the last retry; later steps do not run, so nothing is published |
+| Backfill | `airflow dags backfill -s <start> -e <end> bma_east_update` — safe because each load replaces its month and refuses empty / partial files |
+| Concurrency | `max_active_runs=1`, so two runs never write to the database at the same time |
+| Options | trigger with `{"force": true}`, `{"skip_plan": true}` or `{"publish": false}` |
+
 ## Logging
 
 Every load writes a row to `etl.LoadLog`: target table, source file, month, file size and modified time, rows loaded,
 status (`started` / `success` / `failed`), message, start and finish time. A failed load rolls back its transaction and
-records the error. The scripts print **counts only**, never data values.
+records the error, and the script exits 1 so the next step does not run. The scripts print **counts only**, never data values.
